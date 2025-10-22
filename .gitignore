@@ -70,12 +70,38 @@ ENV/
 env.bak/
 venv.bak/
 
+# API Keys
+config/api_keys.py
+
+# Data files
+data/raw/*
+data/processed/*
+data/cache/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+
+# Model files
+models/*.pkl
+models/*.h5
+models/*.joblib
+
+# PyTorch Lightning logs
+lightning_logs/
+
+# Logs
+logs/
+*.log
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# GitHub specific files
+.github/
 
 # macOS
 .DS_Store

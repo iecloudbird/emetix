@@ -1,0 +1,103 @@
+# ML Model Hyperparameters Configuration
+
+valuation_model:
+  type: "LinearRegression"
+  params:
+    fit_intercept: true
+    normalize: false
+
+  training:
+    test_size: 0.2
+    random_state: 42
+    cross_validation:
+      folds: 5
+      scoring: "neg_mean_absolute_error"
+
+risk_model:
+  type: "RandomForestClassifier"
+  params:
+    n_estimators: 100
+    max_depth: 10
+    min_samples_split: 5
+    min_samples_leaf: 2
+    random_state: 42
+
+  training:
+    test_size: 0.2
+    class_weight: "balanced"
+
+portfolio_model:
+  diversification:
+    clustering:
+      algorithm: "KMeans"
+      n_clusters: 5
+      random_state: 42
+
+  optimization:
+    max_weight_per_stock: 0.2
+    min_weight_per_stock: 0.05
+    risk_free_rate: 0.02
+
+backtesting:
+  initial_capital: 10000
+  commission: 0.001
+  slippage: 0.001
+  rebalance_frequency: "monthly"
+
+# LSTM-DCF Config
+lstm_dcf:
+  architecture:
+    input_features: 10 # Close, Volume, FCFF, Revenue, EPS, Beta, DebtEquity, PE, SMA20, SMA50
+    hidden_size: 128
+    num_layers: 3
+    dropout: 0.2
+    output_size: 1 # Forecasted FCFF/Growth
+
+  training:
+    sequence_length: 60 # Quarterly data (15 years = 60 quarters)
+    batch_size: 64 # Increased for GPU training (RTX 3050 can handle this)
+    learning_rate: 0.001
+    max_epochs: 100
+    early_stopping_patience: 15
+    validation_split: 0.2
+
+  dcf_params:
+    wacc: 0.08 # Weighted Average Cost of Capital
+    terminal_growth: 0.03 # Long-term growth rate
+    forecast_periods: 10 # Years to forecast
+
+# Random Forest Ensemble Configuration (NEW - Phase 3)
+rf_ensemble:
+  n_estimators: 200
+  max_depth: 15
+  min_samples_split: 10
+  min_samples_leaf: 4
+  random_state: 42
+  n_jobs: -1
+
+  features:
+    - lstm_fair_value_gap # From LSTM-DCF
+    - pe_ratio
+    - pb_ratio
+    - peg_ratio
+    - beta
+    - debt_equity
+    - current_ratio
+    - roe
+    - revenue_growth
+    - fcf_margin
+
+  training:
+    test_size: 0.2
+    cross_validation_folds: 5
+
+  thresholds:
+    undervalued: 0.20 # 20% gap threshold
+    high_confidence: 0.75
+
+# Consensus Scoring Weights
+consensus_weights:
+  lstm_dcf: 0.40 # 40% weight
+  rf_ensemble: 0.30 # 30% weight
+  linear_valuation: 0.20 # 20% weight
+  risk_classifier: 0.10 # 10% weight

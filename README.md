@@ -1,54 +1,80 @@
-# jobhedge-investor
+# Emetix
 
-## Setup
+## Quick Start
 
-### Prerequisites
+### 1. Setup Virtual Environment
 
-- Python 3.8 or higher
-- pip (Python package installer)
+```powershell
+# Create virtual environment (first time only)
+python -m venv venv
 
-### Installation
+# Activate virtual environment (Windows PowerShell)
+.\venv\Scripts\Activate.ps1
 
-1. **Clone the repository**
+# Install dependencies
+pip install -r requirements.txt
+```
 
-   ```bash
-   git clone https://github.com/iecloudbird/jobhedge-investor.git
-   cd jobhedge-investor
-   ```
+### 2. Configuration
 
-2. **Create a virtual environment**
+Create `.env` file in project root:
 
-   ```bash
-   python -m venv venv
-   ```
+```env
+GROQ_API_KEY=your_groq_api_key_here
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key_here
+```
 
-3. **Activate the virtual environment**
+### 3. Run Scripts
 
-   - Windows:
-     ```bash
-     venv\Scripts\activate
-     ```
-   - macOS/Linux:
-     ```bash
-     source venv/bin/activate
-     ```
+```powershell
+# Always activate venv first
+.\venv\Scripts\Activate.ps1
 
-4. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Run data pipeline
+.\venv\Scripts\python.exe scripts/fetch_historical_data.py
 
-### Development
+# Train ML models
+.\venv\Scripts\python.exe scripts/train_lstm_dcf.py
+.\venv\Scripts\python.exe scripts/train_rf_ensemble.py
 
-- Always activate the virtual environment before working on the project
-- To add new dependencies, install them and update requirements.txt:
-  ```bash
-  pip install package_name
-  pip freeze > requirements.txt
-  ```
+# Test models
+.\venv\Scripts\python.exe scripts/quick_model_test.py
 
-### Deactivating the virtual environment
+# Run stock analysis
+.\venv\Scripts\python.exe scripts/analyze_stock.py AAPL
+```
 
-```bash
+### 4. Deactivate
+
+```powershell
 deactivate
 ```
+
+## Project Structure
+
+```
+emetix/
+├── config/          # Configuration files
+├── data/            # Data storage (raw, processed, cache)
+├── models/          # Trained ML models
+├── scripts/         # Executable scripts
+├── src/             # Source code (agents, models, data fetchers)
+└── tests/           # Unit and integration tests
+```
+
+## Development
+
+```powershell
+# Run tests
+pytest
+
+# Run specific test
+pytest tests/unit/test_agents/
+
+# Check code coverage
+pytest --cov=src
+```
+
+---
+
+_For detailed documentation, see `/docs` directory._
