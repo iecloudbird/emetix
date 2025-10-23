@@ -48,8 +48,8 @@ class WatchlistManagerAgent:
             os.environ["GROQ_API_KEY"] = api_key
         
         self.logger = logger
-        # Use Gemma2-9B for efficient aggregation
-        self.llm = ChatGroq(model="gemma2-9b-it", temperature=0)
+        # Use llama-3.3-70b-versatile - gemma2-9b-it has been decommissioned
+        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
         
         # Load ML models
         self.ml_models_available = False
@@ -596,7 +596,7 @@ class WatchlistManagerAgent:
             return {
                 'watchlist': result['output'],
                 'agent': 'WatchlistManagerAgent',
-                'model': 'gemma2-9b-it'
+                'model': 'llama-3.3-70b-versatile'
             }
             
         except Exception as e:
