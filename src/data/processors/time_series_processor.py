@@ -8,9 +8,10 @@ from typing import List, Tuple, Optional
 from sklearn.preprocessing import MinMaxScaler
 import time
 from pathlib import Path
+import joblib
 
 from src.data.fetchers import YFinanceFetcher
-from config.settings import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config.settings import RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +34,10 @@ class TimeSeriesProcessor:
         self.fetcher = YFinanceFetcher()
         self.sequence_length = sequence_length
         self.scaler = MinMaxScaler()
+        self.scaler_path = MODELS_DIR / "lstm_dcf_scaler.pkl"
+        
+        # Try to load saved scaler if it exists
+        self._load_scaler()
         
     def fetch_sequential_data(
         self, 
@@ -141,7 +146,8 @@ class TimeSeriesProcessor:
     def create_sequences(
         self, 
         df: pd.DataFrame, 
-        target_col: str = 'close'
+        target_col: str = 'close',
+        fit_scaler: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Create LSTM input sequences (X) and targets (y)
@@ -149,6 +155,7 @@ class TimeSeriesProcessor:
         Args:
             df: Feature DataFrame
             target_col: Column to predict
+            fit_scaler: If True, fit scaler on data (training). If False, use existing scaler (inference)
             
         Returns:
             (X_sequences, y_targets) arrays
@@ -162,7 +169,14 @@ class TimeSeriesProcessor:
         
         # Normalize features
         feature_cols = numeric_df.columns.tolist()
-        scaled_data = self.scaler.fit_transform(numeric_df[feature_cols])
+        
+        # Use fit_transform for training, transform for inference
+        if fit_scaler or not hasattr(self.scaler, 'n_features_in_'):
+            logger.info("Fitting scaler on data (training mode)")
+            scaled_data = self.scaler.fit_transform(numeric_df[feature_cols])
+        else:
+            logger.info("Using pre-fitted scaler (inference mode)")
+            scaled_data = self.scaler.transform(numeric_df[feature_cols])
         
         X, y = [], []
         for i in range(self.sequence_length, len(scaled_data)):
@@ -223,3 +237,54 @@ class TimeSeriesProcessor:
         logger.info(f"Saved combined training data: {output_path}")
         
         return combined
+    
+    def save_scaler(self):
+        """Save the fitted scaler for later use during inference"""
+        try:
+            joblib.dump(self.scaler, self.scaler_path)
+            logger.info(f"Saved scaler to {self.scaler_path}")
+        except Exception as e:
+            logger.error(f"Failed to save scaler: {e}")
+    
+    def _load_scaler(self):
+        """Load a previously saved scaler"""
+        try:
+            if self.scaler_path.exists():
+                self.scaler = joblib.load(self.scaler_path)
+                logger.info(f"Loaded scaler from {self.scaler_path}")
+        except Exception as e:
+            logger.warning(f"Could not load scaler (will use fresh one): {e}")
+    
+    def inverse_transform_predictions(self, predictions: np.ndarray, feature_name: str = 'fcff_proxy') -> np.ndarray:
+        """
+        Inverse transform normalized predictions back to original scale
+        
+        Args:
+            predictions: Normalized predictions (0-1 scale)
+            feature_name: Name of the feature to inverse transform
+            
+        Returns:
+            Predictions in original scale
+        """
+        try:
+            # Get feature index from scaler
+            if hasattr(self.scaler, 'feature_names_in_'):
+                feature_idx = list(self.scaler.feature_names_in_).index(feature_name)
+            else:
+                # Assume fcff_proxy is last feature (index 11 for 12 features)
+                logger.warning(f"Scaler has no feature names, assuming {feature_name} is last feature")
+                feature_idx = -1
+            
+            # Create dummy array with all zeros except the feature we want
+            n_features = self.scaler.n_features_in_
+            dummy = np.zeros((len(predictions), n_features))
+            dummy[:, feature_idx] = predictions
+            
+            # Inverse transform
+            denormalized = self.scaler.inverse_transform(dummy)
+            
+            return denormalized[:, feature_idx]
+        except Exception as e:
+            logger.error(f"Inverse transform failed: {e}")
+            # Return predictions as-is if inverse transform fails
+            return predictions

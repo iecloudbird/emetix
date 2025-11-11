@@ -144,18 +144,24 @@ Component Scores: {result['component_scores']}
                 # Get last sequence for prediction
                 last_seq = torch.tensor(X[-1:], dtype=torch.float32)
                 
-                # Forecast FCFF
-                fcff_forecasts = self.lstm_model.forecast_fcff(last_seq, periods=10)
-                
-                # Get stock info
+                # Get stock info for shares outstanding
                 stock = yf.Ticker(ticker)
                 info = stock.info
                 current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
                 shares = info.get('sharesOutstanding', 1e9)
                 
-                # Calculate DCF valuation
-                dcf_result = self.lstm_model.dcf_valuation(fcff_forecasts, shares)
-                fair_value = dcf_result['fair_value']
+                # Forecast FCFF (per-share mode - no shares scaling)
+                fcff_forecasts = self.lstm_model.forecast_fcff(
+                    last_seq, 
+                    periods=10, 
+                    scaler=self.time_series_processor.scaler,
+                    fcff_feature_idx=-1,
+                    use_per_share=True  # Keep as per-share FCFF
+                )
+                
+                # Calculate DCF valuation (with calibration)
+                dcf_result = self.lstm_model.dcf_valuation(fcff_forecasts, 1.0, current_price)
+                fair_value = dcf_result.get('calibrated_fair_value', dcf_result['fair_value'])
                 
                 # Calculate valuation gap
                 gap = ((fair_value - current_price) / current_price) * 100 if current_price > 0 else 0
@@ -167,19 +173,21 @@ LSTM-DCF Hybrid Valuation for {ticker}:
 
 Current Price: ${current_price:.2f}
 Fair Value (DCF): ${fair_value:.2f}
+{'Raw Model Output: $' + f'{dcf_result["fair_value"]:.2f}' if abs(dcf_result["fair_value"] - fair_value) > 1 else ''}
 Valuation Gap: {gap:+.2f}%
 Assessment: {"UNDERVALUED" if is_undervalued else "FAIRLY VALUED" if abs(gap) < 10 else "OVERVALUED"}
 
 DCF Components:
-- Enterprise Value: ${dcf_result['enterprise_value']/1e9:.2f}B
-- Terminal Value: ${dcf_result['terminal_value']/1e9:.2f}B
-- PV of Terminal Value: ${dcf_result['pv_terminal_value']/1e9:.2f}B
+- Present Value of FCFF: ${dcf_result['pv_fcff']:.2f}
+- Terminal Value (PV): ${dcf_result['pv_terminal_value']:.2f}
+- Total Value: ${dcf_result['enterprise_value']:.2f}
 
-10-Year FCFF Forecast (LSTM):
-{' → '.join([f"${f/1e9:.2f}B" for f in fcff_forecasts[:5]])}...
+10-Year FCFF Forecast (LSTM, per-share):
+{' → '.join([f"${f:.2f}" for f in fcff_forecasts[:5]])}...
 
 Recommendation: {"BUY" if gap > 15 else "HOLD" if gap > -10 else "SELL"}
 Confidence: {"High" if abs(gap) > 20 else "Medium"}
+Note: Model trained on proxy FCFF, use as relative indicator only
 """
             except Exception as e:
                 self.logger.error(f"LSTM-DCF valuation error: {e}", exc_info=True)
@@ -211,16 +219,16 @@ Confidence: {"High" if abs(gap) > 20 else "Medium"}
 Random Forest Multi-Metric Analysis for {ticker}:
 
 Ensemble Score: {result['ensemble_score']:.4f}
-Undervalued Probability: {result['undervalued_probability']:.2%}
+Undervalued Probability: {result.get('classification_prob', result.get('undervalued_probability', 0.5)):.2%}
 Classification: {"UNDERVALUED" if result['is_undervalued'] else "NOT UNDERVALUED"}
 
-Regression Prediction: {result['regression_prediction']:.4f}
-Classification Confidence: {result['classification_confidence']:.2%}
+Regression Prediction: {result.get('regression_score', result.get('regression_prediction', 0)):.4f}
+Classification Confidence: {result.get('classification_prob', result.get('classification_confidence', 0.5)):.2%}
 
 Top 5 Most Important Features:
-{chr(10).join([f"  {row['feature']}: {row['importance']:.4f}" for _, row in importance.iterrows()])}
+{chr(10).join([f"  {row['feature']}: {row['importance']:.4f}" for _, row in importance.head(5).iterrows()])}
 
-Recommendation: {"BUY" if result['is_undervalued'] and result['undervalued_probability'] > 0.7 else "HOLD" if result['ensemble_score'] > 0.5 else "AVOID"}
+Recommendation: {"BUY" if result['is_undervalued'] and result.get('classification_prob', 0.5) > 0.7 else "HOLD" if result['ensemble_score'] > 0.5 else "AVOID"}
 """
             except Exception as e:
                 self.logger.error(f"RF analysis error: {e}", exc_info=True)
@@ -253,21 +261,36 @@ Recommendation: {"BUY" if result['is_undervalued'] and result['undervalued_proba
                         if ts_data is not None and not ts_data.empty:
                             X, _ = self.time_series_processor.create_sequences(ts_data, target_col='close')
                             if len(X) > 0:
-                                last_seq = torch.tensor(X[-1:], dtype=torch.float32)
-                                fcff_forecasts = self.lstm_model.forecast_fcff(last_seq, periods=10)
-                                
+                                # Get stock info
                                 stock = yf.Ticker(ticker)
                                 info = stock.info
                                 current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                                shares = info.get('sharesOutstanding', 1e9)
                                 
-                                dcf_result = self.lstm_model.dcf_valuation(fcff_forecasts, shares)
-                                fair_value = dcf_result['fair_value']
+                                last_seq = torch.tensor(X[-1:], dtype=torch.float32)
+                                fcff_forecasts = self.lstm_model.forecast_fcff(
+                                    last_seq, 
+                                    periods=10,
+                                    scaler=self.time_series_processor.scaler,
+                                    fcff_feature_idx=-1,
+                                    use_per_share=True  # Per-share mode
+                                )
                                 
-                                if current_price > 0:
-                                    gap = ((fair_value - current_price) / current_price) * 100
-                                    # Normalize gap to 0-1 scale (-20% to +20% maps to 0 to 1)
-                                    lstm_score = max(0, min(1, (gap + 20) / 40))
+                                # USE RELATIVE SCORING: Compare FCFF growth trend vs current price
+                                # If FCFF is growing strongly, score higher
+                                avg_fcff = sum(fcff_forecasts) / len(fcff_forecasts)
+                                fcff_growth = (fcff_forecasts[-1] - fcff_forecasts[0]) / fcff_forecasts[0] if fcff_forecasts[0] > 0 else 0
+                                
+                                # Normalize: Strong growth (>50%) = 1.0, negative growth (<-10%) = 0.0
+                                if fcff_growth > 0.5:
+                                    lstm_score = 1.0
+                                elif fcff_growth > 0.2:
+                                    lstm_score = 0.65 + (fcff_growth - 0.2) * 1.17  # 0.2-0.5 → 0.65-1.0
+                                elif fcff_growth > 0:
+                                    lstm_score = 0.5 + (fcff_growth / 0.2) * 0.15  # 0-0.2 → 0.5-0.65
+                                elif fcff_growth > -0.1:
+                                    lstm_score = 0.5 + (fcff_growth / 0.1) * 0.2  # -0.1-0 → 0.3-0.5
+                                else:
+                                    lstm_score = 0.3
                     except:
                         pass
                 

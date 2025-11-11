@@ -29,23 +29,25 @@ class LSTMDCFModel(pl.LightningModule):
     
     def __init__(
         self,
-        input_size: int = 10,
+        input_size: int = 16,
         hidden_size: int = 128,
         num_layers: int = 3,
         dropout: float = 0.2,
         learning_rate: float = 0.001,
+        output_size: int = 2,
         wacc: float = 0.08,
         terminal_growth: float = 0.03
     ):
         """
-        Initialize LSTM-DCF model
+        Initialize LSTM-DCF model for growth rate prediction
         
         Args:
-            input_size: Number of input features
+            input_size: Number of input features (16 recommended: core + margins + normalized)
             hidden_size: LSTM hidden dimension
             num_layers: Number of LSTM layers
             dropout: Dropout probability
             learning_rate: Learning rate for optimizer
+            output_size: Number of outputs (2 for revenue_growth + fcf_growth, 3 to add ebitda_growth)
             wacc: Weighted Average Cost of Capital
             terminal_growth: Terminal growth rate for DCF
         """
@@ -61,8 +63,8 @@ class LSTMDCFModel(pl.LightningModule):
             batch_first=True
         )
         
-        # Output layer
-        self.fc = nn.Linear(hidden_size, 1)  # Predict FCFF/growth
+        # Output layer - now predicts multiple growth rates
+        self.fc = nn.Linear(hidden_size, output_size)  # Output: [revenue_growth, fcf_growth, (optional ebitda_growth)]
         
         # DCF parameters
         self.wacc = wacc
@@ -79,7 +81,9 @@ class LSTMDCFModel(pl.LightningModule):
             x: (batch, sequence_length, features)
             
         Returns:
-            Predicted FCFF/growth (batch, 1)
+            Predicted growth rates (batch, output_size)
+            - output_size=2: [revenue_growth, fcf_growth]
+            - output_size=3: [revenue_growth, fcf_growth, ebitda_growth]
         """
         lstm_out, (hidden, cell) = self.lstm(x)
         # Use last timestep output
@@ -88,19 +92,41 @@ class LSTMDCFModel(pl.LightningModule):
         return prediction
     
     def training_step(self, batch, batch_idx):
-        """PyTorch Lightning training step"""
+        """PyTorch Lightning training step for growth rate prediction"""
         sequences, targets = batch
-        predictions = self.forward(sequences).squeeze()
+        predictions = self.forward(sequences)
+        
+        # Handle both single and multi-output cases
+        if self.hparams.output_size == 1:
+            predictions = predictions.squeeze()
+            targets = targets.squeeze()
+        
         loss = self.criterion(predictions, targets)
+        
+        # Log individual losses for multi-output
+        if self.hparams.output_size > 1:
+            for i in range(self.hparams.output_size):
+                self.log(f'train_loss_output_{i}', self.criterion(predictions[:, i], targets[:, i]))
         
         self.log('train_loss', loss, prog_bar=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
-        """PyTorch Lightning validation step"""
+        """PyTorch Lightning validation step for growth rate prediction"""
         sequences, targets = batch
-        predictions = self.forward(sequences).squeeze()
+        predictions = self.forward(sequences)
+        
+        # Handle both single and multi-output cases
+        if self.hparams.output_size == 1:
+            predictions = predictions.squeeze()
+            targets = targets.squeeze()
+        
         loss = self.criterion(predictions, targets)
+        
+        # Log individual losses for multi-output
+        if self.hparams.output_size > 1:
+            for i in range(self.hparams.output_size):
+                self.log(f'val_loss_output_{i}', self.criterion(predictions[:, i], targets[:, i]))
         
         self.log('val_loss', loss, prog_bar=True)
         return loss
@@ -115,7 +141,11 @@ class LSTMDCFModel(pl.LightningModule):
     def forecast_fcff(
         self, 
         sequence: torch.Tensor, 
-        periods: int = 10
+        periods: int = 10,
+        scaler = None,
+        fcff_feature_idx: int = -1,
+        shares_outstanding: float = 1.0,
+        use_per_share: bool = True
     ) -> List[float]:
         """
         Forecast FCFF for multiple periods
@@ -123,9 +153,13 @@ class LSTMDCFModel(pl.LightningModule):
         Args:
             sequence: Input sequence (1, seq_len, features)
             periods: Number of forecast periods
+            scaler: Optional scaler to inverse-transform predictions
+            fcff_feature_idx: Index of FCFF feature in scaler (default: -1 for last feature)
+            shares_outstanding: Shares outstanding (used if use_per_share=False)
+            use_per_share: If True, returns per-share FCFF. If False, returns aggregate FCFF
             
         Returns:
-            List of forecasted FCFF values
+            List of forecasted FCFF values (per-share or aggregate based on use_per_share)
         """
         self.eval()
         forecasts = []
@@ -134,7 +168,24 @@ class LSTMDCFModel(pl.LightningModule):
             current_seq = sequence.clone()
             for _ in range(periods):
                 pred = self.forward(current_seq)
-                forecasts.append(pred.item())
+                pred_value = pred.item()
+                
+                # Inverse transform if scaler provided
+                if scaler is not None:
+                    try:
+                        n_features = scaler.n_features_in_
+                        dummy = np.zeros((1, n_features))
+                        dummy[0, fcff_feature_idx] = pred_value
+                        denormalized = scaler.inverse_transform(dummy)
+                        pred_value = denormalized[0, fcff_feature_idx]
+                        
+                        # Scale to aggregate if requested
+                        if not use_per_share:
+                            pred_value *= shares_outstanding
+                    except Exception as e:
+                        logger.warning(f"Inverse transform failed, using normalized value: {e}")
+                
+                forecasts.append(pred_value)
                 
                 # Update sequence (simplified - append prediction)
                 # In production, update with actual features
@@ -147,14 +198,16 @@ class LSTMDCFModel(pl.LightningModule):
     def dcf_valuation(
         self, 
         fcff_forecasts: List[float], 
-        current_shares: float = 1.0
+        current_shares: float = 1.0,
+        current_price: float = None
     ) -> Dict[str, float]:
         """
         Calculate DCF fair value from FCFF forecasts
         
         Args:
-            fcff_forecasts: List of forecasted FCFF
-            current_shares: Shares outstanding
+            fcff_forecasts: List of forecasted FCFF (per-share recommended)
+            current_shares: Shares outstanding (use 1.0 for per-share FCFF)
+            current_price: Current stock price for calibration (optional)
             
         Returns:
             Dict with fair_value, terminal_value, pv_fcff, enterprise_value
@@ -165,7 +218,9 @@ class LSTMDCFModel(pl.LightningModule):
                 'fair_value': 0,
                 'pv_fcff': 0,
                 'terminal_value': 0,
-                'enterprise_value': 0
+                'pv_terminal_value': 0,
+                'enterprise_value': 0,
+                'calibrated_fair_value': 0
             }
         
         # Present value of forecast period
@@ -183,10 +238,22 @@ class LSTMDCFModel(pl.LightningModule):
         enterprise_value = pv_fcff + pv_terminal
         fair_value_per_share = enterprise_value / current_shares
         
+        # Calibration: If model overestimates significantly, apply dampening
+        calibrated_fair_value = fair_value_per_share
+        if current_price and current_price > 0:
+            valuation_ratio = fair_value_per_share / current_price
+            if valuation_ratio > 5:  # Model predicts 5x+ current price
+                # Apply logarithmic dampening to extreme valuations
+                dampening_factor = 0.3 + 0.7 * (1 / np.log10(valuation_ratio + 1))
+                calibrated_fair_value = current_price * (1 + (valuation_ratio - 1) * dampening_factor)
+                logger.info(f"Applied calibration: ${fair_value_per_share:.2f} → ${calibrated_fair_value:.2f} (ratio: {valuation_ratio:.2f}x)")
+        
         return {
             'fair_value': float(fair_value_per_share),
+            'calibrated_fair_value': float(calibrated_fair_value),
             'pv_fcff': float(pv_fcff),
-            'terminal_value': float(pv_terminal),
+            'terminal_value': float(terminal_value),
+            'pv_terminal_value': float(pv_terminal),
             'enterprise_value': float(enterprise_value)
         }
     
@@ -194,7 +261,9 @@ class LSTMDCFModel(pl.LightningModule):
         self,
         sequence: torch.Tensor,
         current_price: float,
-        shares_outstanding: float
+        shares_outstanding: float,
+        scaler = None,
+        fcff_feature_idx: int = -1
     ) -> Dict[str, float]:
         """
         Complete valuation prediction
@@ -203,12 +272,20 @@ class LSTMDCFModel(pl.LightningModule):
             sequence: Input sequence tensor
             current_price: Current stock price
             shares_outstanding: Number of shares outstanding
+            scaler: Optional scaler for inverse transformation
+            fcff_feature_idx: Index of FCFF feature in scaler
             
         Returns:
             Complete valuation metrics
         """
         # Forecast FCFF
-        fcff_forecasts = self.forecast_fcff(sequence, periods=10)
+        fcff_forecasts = self.forecast_fcff(
+            sequence, 
+            periods=10, 
+            scaler=scaler, 
+            fcff_feature_idx=fcff_feature_idx,
+            shares_outstanding=shares_outstanding
+        )
         
         # DCF valuation
         dcf_result = self.dcf_valuation(fcff_forecasts, shares_outstanding)

@@ -12,13 +12,12 @@ logger = get_logger(__name__)
 
 class ConsensusScorer:
     """
-    Multi-model consensus scoring
+    Multi-model consensus scoring with enhanced weighting
     
-    Default Weights:
-    - LSTM-DCF: 40%
-    - RF Ensemble: 30%
-    - Linear Valuation: 20%
-    - Risk Classifier: 10%
+    Enhanced Weights:
+    - LSTM-DCF: 70% (Truth: Long-term fair value)
+    - RF Risk+Sentiment: 20% (Brake: Short-term risk + market mood) 
+    - P/E Sanity Check: 10% (Anchor: Market reality check)
     """
     
     def __init__(
@@ -26,16 +25,15 @@ class ConsensusScorer:
         weights: Dict[str, float] = None
     ):
         """
-        Initialize consensus scorer
+        Initialize consensus scorer with enhanced weighting
         
         Args:
             weights: Custom weights for each model (optional)
         """
         self.weights = weights or {
-            'lstm_dcf': 0.40,
-            'rf_ensemble': 0.30,
-            'linear_valuation': 0.20,
-            'risk_classifier': 0.10
+            'lstm_dcf': 0.70,           # Truth: Fair value (primary signal)
+            'rf_risk_sentiment': 0.20,  # Brake: Risk + sentiment filter
+            'pe_sanity_score': 0.10     # Anchor: Market reality check
         }
         
         # Normalize weights to sum to 1.0

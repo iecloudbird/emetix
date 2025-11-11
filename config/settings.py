@@ -29,36 +29,6 @@ VALUATION_MODEL_PATH = MODELS_DIR / 'valuation_model.pkl'
 RISK_MODEL_PATH = MODELS_DIR / 'risk_model.pkl'
 PORTFOLIO_MODEL_PATH = MODELS_DIR / 'portfolio_model.pkl'
 
-# ML Model Configuration
-ML_CONFIG = {
-    'valuation': {
-        'test_size': 0.2,
-        'random_state': 42,
-        'cv_folds': 5
-    },
-    'risk': {
-        'n_estimators': 100,
-        'max_depth': 10,
-        'random_state': 42
-    }
-}
-
-# Stock Analysis Thresholds
-RISK_THRESHOLDS = {
-    'low_beta': 1.0,
-    'undervalued_pct': 20.0,  # >20% undervalued
-    'max_debt_equity': 2.0,
-    'min_pe_ratio': 5.0,
-    'max_pe_ratio': 30.0
-}
-
-# Scoring Weights
-SCORING_WEIGHTS = {
-    'fundamental': 0.40,
-    'technical': 0.30,
-    'ml_prediction': 0.30
-}
-
 # API Configuration
 API_CONFIG = {
     'host': '0.0.0.0',
@@ -82,5 +52,3 @@ CACHE_CONFIG = {
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = BASE_DIR / 'logs' / 'app.log'
 
-# Database (if needed)
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///JobHedge.db')

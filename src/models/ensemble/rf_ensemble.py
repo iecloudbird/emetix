@@ -70,33 +70,25 @@ class RFEnsembleModel:
     def prepare_features(
         self, 
         df: pd.DataFrame, 
-        lstm_predictions: Optional[Dict[str, float]] = None
+        lstm_predictions: Optional[Dict[str, float]] = None,
+        enhanced_features: Optional[Dict[str, float]] = None
     ) -> pd.DataFrame:
         """
-        Prepare feature matrix for RF
+        Prepare enhanced 14-feature matrix for RF Risk + Sentiment Pipeline
         
         Args:
             df: Stock data from YFinanceFetcher (dict or DataFrame)
             lstm_predictions: Optional LSTM fair value predictions
+            enhanced_features: Optional technical/sentiment features
             
         Returns:
-            Feature DataFrame
+            Feature DataFrame with 14 features
         """
         # Convert dict to DataFrame if needed
         if isinstance(df, dict):
             df = pd.DataFrame([df])
         elif not isinstance(df, pd.DataFrame):
             raise ValueError(f"Expected dict or DataFrame, got {type(df)}")
-        
-        features = pd.DataFrame()
-        
-        # LSTM features (if available)
-        if lstm_predictions:
-            features['lstm_fair_value_gap'] = [lstm_predictions.get('fair_value_gap', 0)]
-            features['lstm_terminal_value'] = [lstm_predictions.get('terminal_value', 0)]
-        else:
-            features['lstm_fair_value_gap'] = [0]
-            features['lstm_terminal_value'] = [0]
         
         # Helper function to safely extract values
         def safe_get(col_name, default=0):
@@ -105,28 +97,60 @@ class RFEnsembleModel:
                 return val.iloc[0] if not val.empty else default
             return val
         
-        # Valuation metrics
-        features['pe_ratio'] = [safe_get('pe_ratio', np.nan)]
-        features['pb_ratio'] = [safe_get('price_to_book', np.nan)]
-        features['peg_ratio'] = [safe_get('peg_ratio', np.nan)]
-        features['ev_ebitda'] = [safe_get('enterprise_to_ebitda', np.nan)]
+        # Build ENHANCED 14-feature set for Risk + Sentiment Pipeline
+        features = pd.DataFrame()
         
-        # Risk metrics
-        features['beta'] = [safe_get('beta', 1.0)]
-        features['debt_equity'] = [safe_get('debt_to_equity', 0)]
-        features['current_ratio'] = [safe_get('current_ratio', 1.0)]
+        if enhanced_features:
+            # Use enhanced technical/sentiment features (14 features)
+            
+            # 1-3: Core Risk Metrics
+            features['beta'] = [enhanced_features.get('beta', 1.0)]
+            features['debt_to_equity'] = [enhanced_features.get('debt_to_equity', 0)]
+            features['30d_volatility'] = [enhanced_features.get('30d_volatility', 0.2)]
+            
+            # 4-5: Volume and Short Interest
+            features['volume_zscore'] = [enhanced_features.get('volume_zscore', 0)]
+            features['short_percent'] = [enhanced_features.get('short_percent', 0)]
+            
+            # 6: Technical Indicator
+            features['rsi_14'] = [enhanced_features.get('rsi_14', 50)]
+            
+            # 7-10: News Sentiment Features
+            features['sentiment_mean'] = [enhanced_features.get('sentiment_mean', 0)]
+            features['sentiment_std'] = [enhanced_features.get('sentiment_std', 0.3)]
+            features['news_volume'] = [enhanced_features.get('news_volume', 20)]
+            features['relevance_mean'] = [enhanced_features.get('relevance_mean', 0.5)]
+            
+            # 11-14: Fundamental Features
+            features['pe_ratio'] = [enhanced_features.get('pe_ratio', 0)]
+            features['revenue_growth'] = [enhanced_features.get('revenue_growth', 0)]
+            features['current_ratio'] = [enhanced_features.get('current_ratio', 1.0)]
+            features['return_on_equity'] = [enhanced_features.get('return_on_equity', 0)]
+            
+        else:
+            # Fallback to basic features (backward compatibility)
+            features['beta'] = [safe_get('beta', 1.0)]
+            features['debt_to_equity'] = [safe_get('debt_to_equity', 0)]
+            features['30d_volatility'] = [0.2]  # Default volatility
+            features['volume_zscore'] = [0]
+            features['short_percent'] = [0]
+            features['rsi_14'] = [50]  # Neutral RSI
+            features['sentiment_mean'] = [0]  # Neutral sentiment
+            features['sentiment_std'] = [0.3]  # Default volatility
+            features['news_volume'] = [20]  # Default news volume
+            features['relevance_mean'] = [0.5]  # Default relevance
+            features['pe_ratio'] = [safe_get('pe_ratio', 0)]
+            features['revenue_growth'] = [safe_get('revenue_growth', 0)]
+            features['current_ratio'] = [safe_get('current_ratio', 1.0)]
+            features['return_on_equity'] = [safe_get('return_on_equity', 0)]
         
-        # Profitability
-        features['roe'] = [safe_get('return_on_equity', 0)]
-        features['revenue_growth'] = [safe_get('revenue_growth', 0)]
-        
-        # FCF margin (calculate if data available)
-        fcf = safe_get('free_cash_flow', 0)
-        revenue = safe_get('revenue', 1)
-        features['fcf_margin'] = [fcf / (revenue + 1e-6)]  # Avoid division by zero
-        
-        # Fill NaN with median or default values
-        features = features.fillna(0)
+        # Fill NaN with defaults
+        features = features.fillna({
+            'beta': 1.0, 'debt_to_equity': 0, '30d_volatility': 0.2,
+            'volume_zscore': 0, 'short_percent': 0, 'rsi_14': 50,
+            'sentiment_mean': 0, 'sentiment_std': 0.3, 'news_volume': 20, 'relevance_mean': 0.5,
+            'pe_ratio': 0, 'revenue_growth': 0, 'current_ratio': 1.0, 'return_on_equity': 0
+        })
         
         self.feature_names = features.columns.tolist()
         return features
@@ -134,51 +158,43 @@ class RFEnsembleModel:
     def train(
         self, 
         X: pd.DataFrame, 
-        y_regression: np.ndarray, 
-        y_classification: Optional[np.ndarray] = None
+        y_regression: np.ndarray,
+        y_classification: np.ndarray,
+        cv: int = 5
     ) -> Dict[str, float]:
         """
-        Train ensemble models
+        Train RF ensemble
         
         Args:
             X: Feature matrix
-            y_regression: Target (e.g., future returns)
-            y_classification: Optional binary labels (undervalued=1)
+            y_regression: Continuous target (e.g., forward returns)
+            y_classification: Binary target (e.g., outperform vs underperform)
+            cv: Cross-validation folds
             
         Returns:
             Training metrics
         """
+        # Store feature names BEFORE training
+        self.feature_names = X.columns.tolist()
+        
         # Train regressor
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_regression, test_size=0.2, random_state=42
-        )
+        self.regressor.fit(X, y_regression)
+        reg_scores = cross_val_score(self.regressor, X, y_regression, cv=cv, scoring='r2')
         
-        self.regressor.fit(X_train, y_train)
-        reg_score = self.regressor.score(X_test, y_test)
-        
-        # Cross-validation
-        cv_scores = cross_val_score(
-            self.regressor, X, y_regression, cv=5, scoring='r2'
-        )
-        
-        metrics = {
-            'r2_score': float(reg_score),
-            'cv_mean': float(cv_scores.mean()),
-            'cv_std': float(cv_scores.std())
-        }
-        
-        # Train classifier if labels provided
-        if y_classification is not None:
-            X_train_clf, X_test_clf, y_train_clf, y_test_clf = train_test_split(
-                X, y_classification, test_size=0.2, random_state=42
-            )
-            self.classifier.fit(X_train_clf, y_train_clf)
-            metrics['classification_accuracy'] = float(self.classifier.score(X_test_clf, y_test_clf))
+        # Train classifier  
+        self.classifier.fit(X, y_classification)
+        clf_scores = cross_val_score(self.classifier, X, y_classification, cv=cv, scoring='accuracy')
         
         self.is_trained = True
-        logger.info(f"RF Ensemble trained - R²: {reg_score:.4f}, CV: {cv_scores.mean():.4f}")
         
-        return metrics
+        # Return metrics
+        return {
+            'r2_score': float(reg_scores.mean()),
+            'cv_mean': float(reg_scores.mean()),
+            'cv_std': float(reg_scores.std()),
+            'classification_accuracy': float(clf_scores.mean()),
+            'classification_std': float(clf_scores.std())
+        }
     
     def predict_score(self, X: pd.DataFrame) -> Dict[str, float]:
         """
@@ -211,9 +227,20 @@ class RFEnsembleModel:
         if not self.is_trained:
             return pd.DataFrame()
         
+        # Get importances from regressor
+        importances = self.regressor.feature_importances_
+        
+        # Ensure lengths match
+        if len(self.feature_names) != len(importances):
+            logger.warning(f"Feature name count ({len(self.feature_names)}) != importance count ({len(importances)})")
+            # Use indices if mismatch
+            feature_names = [f"feature_{i}" for i in range(len(importances))]
+        else:
+            feature_names = self.feature_names
+        
         importance = pd.DataFrame({
-            'feature': self.feature_names,
-            'importance': self.regressor.feature_importances_
+            'feature': feature_names,
+            'importance': importances
         }).sort_values('importance', ascending=False)
         
         return importance

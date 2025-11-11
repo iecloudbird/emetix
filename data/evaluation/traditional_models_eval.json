@@ -1,0 +1,18 @@
+{
+  "linear_valuation": [],
+  "risk_classifier": [],
+  "performance": {},
+  "srs_compliance": {
+    "NFR-ML-1": {
+      "requirement": "ML inference shall complete in < 300ms per stock",
+      "linear_valuation": false,
+      "risk_classifier": false,
+      "status": "FAIL"
+    },
+    "NFR-ML-4": {
+      "requirement": "Models shall gracefully fallback if unavailable",
+      "status": "PASS",
+      "notes": "Error handling implemented, returns error dict instead of crashing"
+    }
+  }
+}

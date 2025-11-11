@@ -70,7 +70,7 @@ def train_lstm_dcf():
             logger.warning(f"Insufficient data for {ticker}, skipping")
             continue
         
-        X, y = processor.create_sequences(ticker_data, target_col='close')
+        X, y = processor.create_sequences(ticker_data, target_col='close', fit_scaler=True)
         
         if len(X) > 0:
             all_X.append(X)
@@ -160,9 +160,12 @@ def train_lstm_dcf():
     
     trainer.fit(model, train_loader, val_loader)
     
-    # 8. Save final model
+    # 8. Save final model and scaler
     final_path = MODELS_DIR / "lstm_dcf_final.pth"
     model.save_model(str(final_path))
+    
+    # Save the scaler used for normalization (critical for inference!)
+    processor.save_scaler()
     
     # 9. Validation metrics
     val_loss = trainer.callback_metrics.get('val_loss', float('inf'))
@@ -172,6 +175,7 @@ def train_lstm_dcf():
     logger.info("=" * 80)
     logger.info(f"✓ Final validation loss: {val_loss:.6f}")
     logger.info(f"✓ Model saved: {final_path}")
+    logger.info(f"✓ Scaler saved: {processor.scaler_path}")
     logger.info(f"✓ Best checkpoint: {checkpoint.best_model_path}")
     
     return model, val_loss

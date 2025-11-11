@@ -51,7 +51,7 @@ NYSE_TICKERS = [
     'BK', 'STT', 'FITB', 'KEY', 'RF', 'CFG', 'HBAN', 'CMA', 'ZION', 'SIVB',
     'F', 'GM', 'TSLA', 'RIVN', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR', 'WKHS',
     'T', 'VZ', 'TMUS', 'S', 'DISH', 'CHTR', 'CMCSA', 'LUMN', 'VOD', 'TEF',
-    'XOM', 'CVX', 'COP', 'SLB', 'HAL', 'MRO', 'DVN', 'APA', 'EOG', 'HES'
+    'XOM', 'CVX', 'COP', 'SLB', 'HAL', 'MRO', 'DVN', 'APA', 'EOG', 'HES','ZETA','OSCR','HIMS'
 ]
 
 # Combine and deduplicate

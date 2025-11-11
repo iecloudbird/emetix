@@ -114,7 +114,7 @@ def train_model(
     
     # Learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        optimizer, mode='min', factor=0.5, patience=5
     )
     
     best_val_loss = float('inf')
@@ -267,12 +267,12 @@ def main():
     logger.info("LSTM GROWTH FORECASTER TRAINING")
     logger.info("="*80)
     
-    # 1. Load data
-    data_file = PROCESSED_DATA_DIR / "lstm_dcf_training" / "lstm_growth_training_data.csv"
+    # 1. Load data - Use enhanced dataset with 163 stocks (vs 86 original)
+    data_file = PROCESSED_DATA_DIR / "lstm_dcf_training" / "lstm_growth_training_data_enhanced.csv"
     
     if not data_file.exists():
         logger.error(f"Training data not found: {data_file}")
-        logger.info("Please run: python scripts/fetch_lstm_training_data.py")
+        logger.info("Please run: python scripts/fetch_enhanced_training_data.py --create-dataset")
         return
     
     df = pd.read_csv(data_file)
@@ -341,16 +341,22 @@ def main():
     
     # 7. Load best model and evaluate
     logger.info(f"\n📊 Evaluating best model...")
-    best_model = LSTMGrowthForecaster(
-        input_size=4,
-        hidden_size=args.hidden_size,
-        num_layers=args.num_layers,
-        dropout=0.2,
-        output_size=4
-    )
-    best_model.load_model(str(MODELS_DIR / "lstm_growth_forecaster_best.pth"))
+    best_model_path = MODELS_DIR / "lstm_growth_forecaster_best.pth"
     
-    metrics = evaluate_model(best_model, test_loader, device)
+    if best_model_path.exists():
+        best_model = LSTMGrowthForecaster(
+            input_size=4,
+            hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
+            dropout=0.2,
+            output_size=4
+        )
+        best_model.load_model(str(best_model_path))
+        metrics = evaluate_model(best_model, test_loader, device)
+    else:
+        logger.warning("⚠️ Best model checkpoint not found, using final model from training")
+        best_model = model
+        metrics = evaluate_model(model, test_loader, device)
     
     # 8. Save final model
     final_path = MODELS_DIR / "lstm_growth_forecaster.pth"

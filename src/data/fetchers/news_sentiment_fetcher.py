@@ -181,7 +181,7 @@ class NewsSentimentFetcher:
                     'sentiment_score': sentiment['score']
                 })
             
-            self.logger.info(f"✅ Fetched {len(articles)} articles from NewsAPI for {ticker}")
+            self.logger.info(f"[+] Fetched {len(articles)} articles from NewsAPI for {ticker}")
             return articles, False
             
         except Exception as e:
@@ -236,7 +236,7 @@ class NewsSentimentFetcher:
                     'sentiment_score': sentiment['score']
                 })
             
-            self.logger.info(f"✅ Fetched {len(articles)} articles from Google News for {ticker}")
+            self.logger.info(f"[+] Fetched {len(articles)} articles from Google News for {ticker}")
             return articles
             
         except ImportError:
@@ -318,7 +318,7 @@ class NewsSentimentFetcher:
                     'sentiment_score': sentiment['score']
                 })
             
-            self.logger.info(f"✅ Fetched {len(articles)} articles from Finnhub for {ticker}")
+            self.logger.info(f"[+] Fetched {len(articles)} articles from Finnhub for {ticker}")
             return articles, False
             
         except Exception as e:
@@ -354,7 +354,7 @@ class NewsSentimentFetcher:
         fallback_triggered = False
         
         # Tier 1: Yahoo Finance (always fetch, FREE and unlimited)
-        self.logger.info(f"📰 Fetching news for {ticker} ({company_name})...")
+        self.logger.info(f"  Fetching news for {ticker} ({company_name})...")
         yahoo_news = self.fetch_yahoo_finance_news(ticker, limit=20)
         if yahoo_news:
             all_articles.extend(yahoo_news)
@@ -369,7 +369,7 @@ class NewsSentimentFetcher:
         # Tier 2: Finnhub fallback (if NewsAPI hit rate limit)
         if newsapi_rate_limited or (self.api_status['newsapi_exhausted'] and not newsapi_articles):
             fallback_triggered = True
-            self.logger.warning("⚠️  NewsAPI exhausted, using Finnhub as fallback...")
+            self.logger.warning("[!]  NewsAPI exhausted, using Finnhub as fallback...")
             finnhub_articles, _ = self.fetch_finnhub_news(ticker, days=7)
             if finnhub_articles:
                 all_articles.extend(finnhub_articles)
@@ -570,23 +570,23 @@ if __name__ == "__main__":
     print(f"Confidence: {result['confidence']}")
     print(f"Sources Used: {', '.join(result['sources_used'])}")
     if result['fallback_triggered']:
-        print(f"⚠️  Fallback Triggered: NewsAPI exhausted, used Finnhub")
+        print(f"[!]  Fallback Triggered: NewsAPI exhausted, used Finnhub")
     
-    print(f"\n📊 Breakdown:")
+    print(f"\n  Breakdown:")
     print(f"  Positive: {result['positive_count']} ({result['positive_count']/max(result['unique_articles'], 1)*100:.1f}%)")
     print(f"  Negative: {result['negative_count']} ({result['negative_count']/max(result['unique_articles'], 1)*100:.1f}%)")
     print(f"  Neutral: {result['neutral_count']} ({result['neutral_count']/max(result['unique_articles'], 1)*100:.1f}%)")
     
-    print(f"\n📰 Top 5 Recent Headlines:")
+    print(f"\n  Top 5 Recent Headlines:")
     for i, article in enumerate(result['articles'][:5], 1):
         print(f"{i}. [{article['sentiment']}] {article['title'][:80]}")
         print(f"   Source: {article['source']} | Publisher: {article['publisher']}")
         print(f"   Time: {article['publish_time'].strftime('%Y-%m-%d %H:%M')}")
     
     print(f"\n{'='*80}")
-    print(f"✅ Test Complete - System Status:")
-    print(f"   Yahoo Finance: ✅ Always available (FREE)")
-    print(f"   NewsAPI: {'✅ Configured' if result.get('sources_used') and 'NewsAPI' in result['sources_used'] else '⚠️  Not configured or exhausted'}")
-    print(f"   Finnhub: {'✅ Configured' if result.get('sources_used') and 'Finnhub' in result['sources_used'] else '⚠️  Not configured or not needed'}")
-    print(f"   Google News: {'✅ Available' if result.get('sources_used') and 'Google News' in result['sources_used'] else '⚠️  feedparser not installed'}")
+    print(f"[+] Test Complete - System Status:")
+    print(f"   Yahoo Finance: [+] Always available (FREE)")
+    print(f"   NewsAPI: {'[+] Configured' if result.get('sources_used') and 'NewsAPI' in result['sources_used'] else '[!]  Not configured or exhausted'}")
+    print(f"   Finnhub: {'[+] Configured' if result.get('sources_used') and 'Finnhub' in result['sources_used'] else '[!]  Not configured or not needed'}")
+    print(f"   Google News: {'[+] Available' if result.get('sources_used') and 'Google News' in result['sources_used'] else '[!]  feedparser not installed'}")
     print(f"{'='*80}\n")
