@@ -1,24 +1,22 @@
 """
 Watchlist Manager Agent - Intelligent watchlist with dynamic scoring
 Part of Multi-Agent Stock Analysis System
-Enhanced with ML models (LSTM-DCF + RF Ensemble) for advanced predictions
+Uses LSTM-DCF for ML-powered predictions + transparent GARP scoring
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import pandas as pd
 import numpy as np
 import torch
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from config.settings import GROQ_API_KEY, MODELS_DIR
+from config.settings import MODELS_DIR
 from config.logging_config import get_logger
+from src.utils.llm_provider import get_llm
 
 # Import ML models
 from src.models.deep_learning.lstm_dcf import LSTMDCFModel
-from src.models.ensemble.rf_ensemble import RFEnsembleModel
 from src.data.processors.time_series_processor import TimeSeriesProcessor
 
 logger = get_logger(__name__)
@@ -27,49 +25,30 @@ logger = get_logger(__name__)
 class WatchlistManagerAgent:
     """
     Specialized agent for managing intelligent watchlist
-    Uses Groq Gemma2-9B for efficient aggregation and math
-    
-    Features:
-    - Dynamic scoring with weighted factors
-    - Contrarian opportunity detection
-    - Risk-adjusted recommendations
-    - Automated alerts and signals
-    - Persistent storage and tracking
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize Watchlist Manager Agent with ML models
-        
-        Args:
-            api_key: Groq API key
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        # Use llama-3.3-70b-versatile - gemma2-9b-it has been decommissioned
-        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        # Use default model tier for watchlist management
+        self.llm = get_llm(model_tier="default", temperature=0)
         
         # Load ML models
         self.ml_models_available = False
         try:
             # Load LSTM-DCF model
             self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3)
-            lstm_path = str(MODELS_DIR / "lstm_dcf_final.pth")
+            lstm_path = str(MODELS_DIR / "lstm_dcf_enhanced.pth")
             self.lstm_model.load_model(lstm_path)
             self.lstm_model.eval()
-            
-            # Load RF Ensemble model
-            self.rf_model = RFEnsembleModel()
-            rf_path = str(MODELS_DIR / "rf_ensemble.pkl")
-            self.rf_model.load(rf_path)
             
             # Time series processor for LSTM
             self.ts_processor = TimeSeriesProcessor()
             
             self.ml_models_available = True
-            self.logger.info("✅ ML models loaded successfully (LSTM-DCF + RF Ensemble)")
+            self.logger.info("✅ LSTM-DCF model loaded successfully")
         except Exception as e:
             self.logger.warning(f"⚠️ ML models not available: {str(e)}")
             self.logger.info("Falling back to traditional scoring only")
@@ -77,19 +56,18 @@ class WatchlistManagerAgent:
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
         
-        # Updated weights for ML-enhanced scoring
+        # Updated weights for ML-enhanced scoring (LSTM-DCF + GARP)
         if self.ml_models_available:
             self.default_weights = {
-                # Traditional factors (55% total)
-                'growth': 0.18,        # 18% - Revenue/earnings growth
-                'sentiment': 0.15,     # 15% - Market sentiment
-                'valuation': 0.12,     # 12% - P/E, PEG ratios
+                # Traditional factors (50% total)
+                'growth': 0.15,        # 15% - Revenue/earnings growth
+                'sentiment': 0.12,     # 12% - Market sentiment
+                'valuation': 0.13,     # 13% - P/E, PEG ratios (GARP)
                 'risk': 0.10,          # 10% - Beta, volatility, debt
-                # ML predictions (45% total)
-                'lstm_dcf': 0.25,      # 25% - LSTM-DCF fair value
-                'rf_ensemble': 0.20    # 20% - RF expected return
+                # ML predictions (50% total)
+                'lstm_dcf': 0.50       # 50% - LSTM-DCF fair value
             }
-            self.logger.info("📊 Using ML-enhanced scoring weights")
+            self.logger.info("📊 Using LSTM-DCF + GARP scoring weights")
         else:
             # Fallback to traditional weights
             self.default_weights = {
@@ -240,40 +218,16 @@ class WatchlistManagerAgent:
                                     ml_scores['lstm_fair_value'] = result['fair_value']
                                     ml_scores['lstm_gap'] = gap
                                     self.logger.info(f"LSTM-DCF: {ticker} fair value ${result['fair_value']:.2f}, gap {gap:+.1f}%")
-                        
-                        # RF Ensemble prediction (20%)
-                        if stock_data is not None and not (isinstance(stock_data, pd.DataFrame) and stock_data.empty):
-                            # Prepare LSTM predictions dict for RF model
-                            lstm_preds_for_rf = None
-                            if 'lstm_fair_value' in ml_scores:
-                                lstm_preds_for_rf = {
-                                    'fair_value_gap': ml_scores.get('lstm_gap', 0),
-                                    'terminal_value': ml_scores.get('lstm_fair_value', 0)
-                                }
-                            
-                            features = self.rf_model.prepare_features(stock_data, lstm_predictions=lstm_preds_for_rf)
-                            rf_result = self.rf_model.predict_score(features)
-                            
-                            # Use ensemble score (already 0-1 scale)
-                            rf_score = rf_result['ensemble_score']
-                            rf_score = max(0, min(1, rf_score))  # Clamp to [0, 1]
-                            
-                            ml_scores['rf_ensemble'] = rf_score
-                            ml_scores['rf_classification_prob'] = rf_result['classification_prob']
-                            ml_scores['rf_regression_score'] = rf_result['regression_score']
-                            self.logger.info(f"RF Ensemble: {ticker} score {rf_score:.2f}, undervalued={rf_result['is_undervalued']}")
                     
                     except Exception as e:
                         self.logger.warning(f"ML prediction failed for {ticker}: {str(e)}")
                 
                 # Calculate final score
                 if ml_scores:
-                    ml_component = (
-                        ml_scores.get('lstm_dcf', 0.5) * 0.25 +
-                        ml_scores.get('rf_ensemble', 0.5) * 0.20
-                    )
+                    # LSTM-DCF weighted at 50% of total score
+                    ml_component = ml_scores.get('lstm_dcf', 0.5) * 0.50
                     composite_score = traditional_score + ml_component
-                    scoring_method = "ML-Enhanced"
+                    scoring_method = "LSTM-DCF Enhanced"
                 else:
                     # Fallback to traditional + macro if ML unavailable
                     composite_score = traditional_score + scores.get('macro', 0.5) * 0.10
@@ -306,8 +260,8 @@ class WatchlistManagerAgent:
                 # Add ML confirmation flag
                 ml_confirmed = False
                 if ml_scores:
-                    avg_ml_score = (ml_scores.get('lstm_dcf', 0.5) + ml_scores.get('rf_ensemble', 0.5)) / 2
-                    if avg_ml_score > 0.6 and final_score >= 0.65:
+                    lstm_dcf_score = ml_scores.get('lstm_dcf', 0.5)
+                    if lstm_dcf_score > 0.6 and final_score >= 0.65:
                         ml_confirmed = True
                         signal = signal + " (ML-Confirmed)"
                 
@@ -479,7 +433,7 @@ class WatchlistManagerAgent:
             Tool(
                 name="CalculateMLEnhancedScore",
                 func=calculate_ml_enhanced_score_tool,
-                description="Calculate ML-enhanced composite score using LSTM-DCF (25%) and RF Ensemble (20%) predictions combined with traditional factors (55%). Includes fair value estimation, expected returns, and ML confirmation flags. Use this for advanced analysis with deep learning models. Returns detailed score breakdown with ML predictions."
+                description="Calculate ML-enhanced composite score using LSTM-DCF (50%) combined with traditional factors (50%). Includes fair value estimation, expected returns, and ML confirmation flags. Use this for advanced analysis with deep learning models. Returns detailed score breakdown with ML predictions."
             ),
             Tool(
                 name="RankWatchlist",
@@ -515,22 +469,33 @@ class WatchlistManagerAgent:
             return f"{base} (Contrarian play - suppressed by negative sentiment)"
         return base
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent executor"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Watchlist Manager Agent specialized in building and ranking investment watchlists.
+
+You have access to tools that can:
+1. Calculate composite scores from multiple factors (growth, sentiment, valuation, risk, macro)
+2. Detect contrarian opportunities (negative sentiment + strong fundamentals)
+3. Generate investment signals based on scoring
+
+When building a watchlist:
+1. Use CompositeScore tool to calculate weighted scores
+2. Use ContrarianDetector to find hidden opportunities
+3. Use SignalGenerator to create actionable signals
+
+Rank stocks from best to worst opportunity based on composite scores.
+Highlight contrarian plays where sentiment diverges from fundamentals."""
             
-            agent = create_react_agent(self.llm, self.tools, prompt)
-            
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=10  # Increased from 4 to handle multi-stock scoring + contrarian detection
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating Watchlist Manager Agent: {str(e)}")

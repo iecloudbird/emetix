@@ -4,9 +4,14 @@ Implements key valuation metrics for fair value assessment and undervaluation de
 """
 import pandas as pd
 import numpy as np
+import torch
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 from config.logging_config import get_logger
+from config.settings import MODELS_DIR
 from src.data.fetchers import YFinanceFetcher
+from src.models.deep_learning.lstm_dcf import LSTMDCFModel
+from src.data.processors.time_series_processor import TimeSeriesProcessor
 
 logger = get_logger(__name__)
 
@@ -19,6 +24,11 @@ class ValuationAnalyzer:
     def __init__(self):
         self.logger = logger
         self.fetcher = YFinanceFetcher()
+        self.ts_processor = TimeSeriesProcessor()
+        
+        # Initialize LSTM-DCF model (lazy loading)
+        self.lstm_model = None
+        self._load_lstm_model()
         
         # Valuation thresholds (industry-agnostic defaults)
         self.thresholds = {
@@ -37,6 +47,51 @@ class ValuationAnalyzer:
             'ev_ebitda_undervalued': 10,  # EV/EBITDA < 10 undervalued
             'dividend_yield_high': 4,  # Dividend yield > 4% high
         }
+    
+    def _load_lstm_model(self):
+        """Load LSTM-DCF growth model for fair value prediction with proper scaler"""
+        try:
+            # Try Enhanced model first (16-input, 2-output for revenue_growth + fcf_growth)
+            enhanced_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
+            if enhanced_path.exists():
+                checkpoint = torch.load(str(enhanced_path), map_location='cpu', weights_only=False)
+                
+                self.lstm_model = LSTMDCFModel(input_size=16, hidden_size=128, num_layers=3, output_size=2)
+                self.lstm_model.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
+                self.lstm_model.eval()
+                
+                # Load saved scaler and metadata
+                self.lstm_scaler = checkpoint.get('scaler', None)
+                self.lstm_feature_cols = checkpoint.get('feature_cols', None)
+                self.lstm_sequence_length = checkpoint.get('sequence_length', 60)
+                
+                self.logger.info("✅ LSTM-DCF Enhanced model loaded with scaler (16-input, 2-output)")
+                return
+            
+            # Fallback to Final model (12-input, 1-output)
+            final_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
+            if final_path.exists():
+                checkpoint = torch.load(str(final_path), map_location='cpu', weights_only=False)
+                self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3, output_size=1)
+                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                    self.lstm_model.load_state_dict(checkpoint['model_state_dict'])
+                    self.lstm_scaler = checkpoint.get('scaler', None)
+                else:
+                    self.lstm_model.load_state_dict(checkpoint)
+                    self.lstm_scaler = None
+                self.lstm_model.eval()
+                self.lstm_sequence_length = 60
+                self.logger.info("✅ LSTM-DCF Final model loaded (12-input, 1-output)")
+                return
+            
+            self.logger.warning("⚠️ No LSTM-DCF model found, will use traditional DCF only")
+            self.lstm_model = None
+            self.lstm_scaler = None
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error loading LSTM-DCF model: {e}")
+            self.lstm_model = None
+            self.lstm_scaler = None
     
     def fetch_enhanced_data(self, ticker: str) -> Optional[pd.DataFrame]:
         """
@@ -305,8 +360,9 @@ class ValuationAnalyzer:
                 'dividend_yield': row['dividend_yield']
             }
             
-            # Fair value estimation (simplified)
-            fair_value = self._estimate_fair_value(row)
+            # Fair value estimation (returns dict with LSTM-DCF and traditional)
+            fair_value_result = self._estimate_fair_value(row)
+            fair_value = fair_value_result['fair_value']
             
             # Risk assessment
             risk_level = self._assess_risk_level(row)
@@ -315,6 +371,10 @@ class ValuationAnalyzer:
                 'ticker': ticker,
                 'current_price': row['current_price'],
                 'fair_value_estimate': fair_value,
+                'lstm_dcf_fair_value': fair_value_result.get('lstm_dcf_fair_value'),
+                'traditional_fair_value': fair_value_result.get('traditional_fair_value'),
+                'lstm_predicted_growth': fair_value_result.get('lstm_predicted_growth'),
+                'fair_value_method': fair_value_result.get('method', 'Traditional DCF'),
                 'valuation_score': valuation_result['overall_score'],
                 'assessment': valuation_result['assessment'],
                 'key_metrics': key_metrics,
@@ -328,35 +388,240 @@ class ValuationAnalyzer:
             self.logger.error(f"Error analyzing {ticker}: {str(e)}")
             return {'error': str(e)}
     
-    def _estimate_fair_value(self, row: pd.Series) -> float:
+    def _estimate_fair_value(self, row: pd.Series) -> Dict[str, float]:
         """
-        Simple fair value estimation using multiple approaches
+        Enhanced fair value estimation using LSTM-DCF growth model vs traditional DCF
+        
+        Returns:
+            Dict with lstm_dcf_fair_value, traditional_fair_value, and selected fair_value
         """
         try:
             current_price = row['current_price']
-            pe_ratio = row['pe_ratio']
-            pb_ratio = row['pb_ratio']
+            ticker = row['ticker']
             
-            # P/E based fair value (assuming industry average P/E of 18)
-            if pe_ratio > 0 and row['eps'] > 0:
-                fair_pe = 18
-                pe_fair_value = row['eps'] * fair_pe
+            # Traditional DCF calculation (baseline)
+            traditional_fv = self._calculate_traditional_dcf(row)
+            
+            # LSTM-DCF calculation (if model available) - returns (fair_value, growth_rate)
+            lstm_result = self._calculate_lstm_dcf_fair_value(ticker, row) if self.lstm_model else (None, None)
+            lstm_fv, lstm_growth_rate = lstm_result if lstm_result else (None, None)
+            
+            # Select final fair value
+            if lstm_fv and lstm_fv > 0:
+                # Use LSTM if available and reasonable (within 5x of current price)
+                if lstm_fv / current_price <= 5.0:
+                    selected_fv = lstm_fv
+                    method = "LSTM-DCF"
+                else:
+                    # If LSTM predicts extreme value, blend with traditional
+                    selected_fv = (lstm_fv * 0.6 + traditional_fv * 0.4)
+                    method = "Blended (LSTM 60% + Traditional 40%)"
             else:
-                pe_fair_value = current_price
+                selected_fv = traditional_fv
+                method = "Traditional DCF"
             
-            # P/B based fair value (assuming fair P/B of 2.5)
-            if pb_ratio > 0 and row['book_value'] > 0:
-                fair_pb = 2.5
-                pb_fair_value = row['book_value'] * fair_pb
+            return {
+                'fair_value': round(selected_fv, 2),
+                'lstm_dcf_fair_value': round(lstm_fv, 2) if lstm_fv else None,
+                'traditional_fair_value': round(traditional_fv, 2),
+                'lstm_predicted_growth': round(lstm_growth_rate, 2) if lstm_growth_rate else None,
+                'method': method
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error estimating fair value: {e}")
+            return {
+                'fair_value': row['current_price'],
+                'lstm_dcf_fair_value': None,
+                'traditional_fair_value': row['current_price'],
+                'method': "Fallback (Current Price)"
+            }
+    
+    def _calculate_traditional_dcf(self, row: pd.Series) -> float:
+        """
+        Traditional DCF using P/E and P/B multiples
+        """
+        current_price = row['current_price']
+        pe_ratio = row['pe_ratio']
+        pb_ratio = row['pb_ratio']
+        
+        # P/E based fair value (assuming industry average P/E of 18)
+        if pe_ratio > 0 and row['eps'] > 0:
+            fair_pe = 18
+            pe_fair_value = row['eps'] * fair_pe
+        else:
+            pe_fair_value = current_price
+        
+        # P/B based fair value (assuming fair P/B of 2.5)
+        if pb_ratio > 0 and row['book_value'] > 0:
+            fair_pb = 2.5
+            pb_fair_value = row['book_value'] * fair_pb
+        else:
+            pb_fair_value = current_price
+        
+        # Average fair value
+        return (pe_fair_value + pb_fair_value + current_price) / 3
+    
+    def _calculate_lstm_dcf_fair_value(self, ticker: str, row: pd.Series) -> tuple[Optional[float], Optional[float]]:
+        """
+        Calculate fair value using LSTM-DCF growth rate predictions
+        
+        Uses correct quarterly financial statement features that the model was trained on:
+        - revenue, capex, da, fcf, operating_cf, ebitda, total_assets, net_income
+        - operating_income, operating_margin, net_margin, fcf_margin, ebitda_margin
+        - revenue_per_asset, fcf_per_asset, ebitda_per_asset
+        
+        Uses Gordon Growth Model: Fair Value = FCF * (1 + g) / (WACC - g)
+        Where g = LSTM predicted growth rate
+        
+        Returns:
+            Tuple of (fair_value, predicted_growth_rate_percentage)
+        """
+        try:
+            import yfinance as yf
+            
+            stock = yf.Ticker(ticker)
+            
+            # Get quarterly financial statements (what the model was trained on)
+            income_stmt = stock.quarterly_income_stmt
+            cash_flow = stock.quarterly_cashflow
+            balance_sheet = stock.quarterly_balance_sheet
+            
+            if income_stmt.empty or cash_flow.empty:
+                self.logger.debug(f"{ticker}: No quarterly financials available")
+                return None, None
+            
+            n_quarters = min(len(income_stmt.columns), len(cash_flow.columns), 8)
+            
+            if n_quarters < 4:
+                self.logger.debug(f"{ticker}: Not enough quarterly data ({n_quarters} quarters)")
+                return None, None
+            
+            def safe_get(df, names, col, default=0):
+                if not isinstance(names, list):
+                    names = [names]
+                for name in names:
+                    try:
+                        if col and name in df.index:
+                            val = df.loc[name, col]
+                            if pd.notna(val):
+                                return float(val)
+                    except:
+                        pass
+                return default
+            
+            features_list = []
+            
+            for i in range(n_quarters):
+                try:
+                    col_is = income_stmt.columns[i] if i < len(income_stmt.columns) else None
+                    col_cf = cash_flow.columns[i] if i < len(cash_flow.columns) else None
+                    col_bs = balance_sheet.columns[i] if i < len(balance_sheet.columns) else None
+                    
+                    # Income statement items
+                    revenue = safe_get(income_stmt, 'Total Revenue', col_is, 0)
+                    net_income = safe_get(income_stmt, 'Net Income', col_is, 0)
+                    operating_income = safe_get(income_stmt, 'Operating Income', col_is, 0)
+                    ebitda = safe_get(income_stmt, ['EBITDA', 'Normalized EBITDA'], col_is, 0)
+                    
+                    # Cash flow items
+                    operating_cf = safe_get(cash_flow, ['Operating Cash Flow', 'Cash Flow From Continuing Operating Activities'], col_cf, 0)
+                    capex = abs(safe_get(cash_flow, 'Capital Expenditure', col_cf, 0))
+                    da = safe_get(cash_flow, ['Depreciation And Amortization', 'Depreciation'], col_cf, 0)
+                    
+                    fcf = operating_cf - capex
+                    
+                    # Balance sheet
+                    total_assets = safe_get(balance_sheet, 'Total Assets', col_bs, 1)
+                    
+                    # Calculate margins
+                    operating_margin = (operating_income / revenue * 100) if revenue > 0 else 0
+                    net_margin = (net_income / revenue * 100) if revenue > 0 else 0
+                    fcf_margin = (fcf / revenue * 100) if revenue > 0 else 0
+                    ebitda_margin = (ebitda / revenue * 100) if revenue > 0 else 0
+                    
+                    # Asset efficiency ratios
+                    revenue_per_asset = revenue / total_assets if total_assets > 0 else 0
+                    fcf_per_asset = fcf / total_assets if total_assets > 0 else 0
+                    ebitda_per_asset = ebitda / total_assets if total_assets > 0 else 0
+                    
+                    # Feature vector matching training order
+                    quarter_features = [
+                        revenue, capex, da, fcf, operating_cf, ebitda,
+                        total_assets, net_income, operating_income,
+                        operating_margin, net_margin, fcf_margin, ebitda_margin,
+                        revenue_per_asset, fcf_per_asset, ebitda_per_asset
+                    ]
+                    
+                    features_list.append(quarter_features)
+                    
+                except Exception as e:
+                    self.logger.debug(f"{ticker} Q{i} feature extraction error: {e}")
+                    continue
+            
+            if len(features_list) < 4:
+                return None, None
+            
+            # Reverse to chronological order (oldest first, like training)
+            features_list = features_list[::-1]
+            
+            # Pad to sequence length if needed
+            seq_len = getattr(self, 'lstm_sequence_length', 60)
+            while len(features_list) < seq_len:
+                features_list.append(features_list[-1])
+            features_list = features_list[-seq_len:]
+            
+            features_array = np.array(features_list, dtype=np.float32)
+            features_array = np.nan_to_num(features_array, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Apply the SAVED StandardScaler from training
+            if hasattr(self, 'lstm_scaler') and self.lstm_scaler is not None:
+                features_scaled = self.lstm_scaler.transform(features_array)
             else:
-                pb_fair_value = current_price
+                features_scaled = (features_array - features_array.mean(axis=0)) / (features_array.std(axis=0) + 1e-8)
             
-            # Average fair value
-            fair_value = (pe_fair_value + pb_fair_value + current_price) / 3
-            return round(fair_value, 2)
+            X_tensor = torch.FloatTensor(features_scaled).unsqueeze(0)
             
-        except Exception:
-            return row['current_price']
+            with torch.no_grad():
+                prediction = self.lstm_model(X_tensor)
+            
+            # Model outputs [revenue_growth, fcf_growth] as percentages
+            if prediction.shape[1] == 2:
+                predicted_growth = prediction[0, 1].item()  # Use FCF growth
+            else:
+                predicted_growth = prediction[0, 0].item()
+            
+            # Convert from percentage to decimal and clip
+            predicted_growth_rate = predicted_growth / 100.0
+            predicted_growth_rate = np.clip(predicted_growth_rate, -0.30, 0.50)
+            
+            # Gordon Growth Model DCF
+            fcf = row['free_cash_flow']
+            shares_outstanding = row['market_cap'] / row['current_price'] if row['current_price'] > 0 else 1
+            fcf_per_share = fcf / shares_outstanding if shares_outstanding > 0 else 0
+            
+            wacc = 0.10
+            terminal_growth = min(max(predicted_growth_rate * 0.3, 0.01), 0.03)
+            
+            if fcf_per_share > 0 and predicted_growth_rate < wacc - terminal_growth:
+                fair_value = (fcf_per_share * (1 + predicted_growth_rate)) / (wacc - terminal_growth)
+                self.logger.info(f"LSTM-DCF {ticker}: Growth={predicted_growth_rate:.2%}, FCF/share=${fcf_per_share:.2f}, FV=${fair_value:.2f}")
+                return fair_value, predicted_growth_rate * 100
+            else:
+                # EPS-based fallback
+                eps = row['eps']
+                if eps > 0:
+                    peg_adjusted_pe = 15 * (1 + predicted_growth_rate)
+                    peg_adjusted_pe = np.clip(peg_adjusted_pe, 8, 30)
+                    fair_value = eps * peg_adjusted_pe
+                    self.logger.info(f"LSTM-DCF {ticker}: Using EPS method, Growth={predicted_growth_rate:.2%}, FV=${fair_value:.2f}")
+                    return fair_value, predicted_growth_rate * 100
+            
+            return None, None
+            
+        except Exception as e:
+            self.logger.warning(f"LSTM-DCF calculation failed for {ticker}: {e}")
+            return None, None
     
     def _assess_risk_level(self, row: pd.Series) -> str:
         """Assess risk level based on financial metrics"""

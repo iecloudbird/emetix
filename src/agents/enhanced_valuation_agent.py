@@ -1,27 +1,25 @@
 """
-Enhanced Valuation Agent with LSTM-DCF and RF Ensemble Integration
+Enhanced Valuation Agent with LSTM-DCF Integration
 Extends the original ValuationAgent with advanced ML capabilities
 """
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import torch
 import pandas as pd
 
-from config.settings import GROQ_API_KEY, MODELS_DIR
+from config.settings import MODELS_DIR
 from config.logging_config import get_logger
 from src.analysis import ValuationAnalyzer, GrowthScreener
 from src.models.deep_learning.lstm_dcf import LSTMDCFModel
-from src.models.ensemble.rf_ensemble import RFEnsembleModel
 from src.models.ensemble.consensus_scorer import ConsensusScorer
 from src.data.processors.time_series_processor import TimeSeriesProcessor
 from src.data.fetchers import YFinanceFetcher
+from src.utils.llm_provider import get_llm
 import yfinance as yf
 
 logger = get_logger(__name__)
@@ -29,23 +27,17 @@ logger = get_logger(__name__)
 
 class EnhancedValuationAgent:
     """
-    Enhanced Valuation Agent with LSTM-DCF and RF Ensemble models
+    Enhanced Valuation Agent with LSTM-DCF model
     Combines traditional valuation with deep learning forecasts
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize the Enhanced Valuation Agent
-        
-        Args:
-            api_key: Groq API key for LLM
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        # Use llama-3.3-70b-versatile - llama3-8b-8192 has been decommissioned
-        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        # Use default model tier for valuation analysis
+        self.llm = get_llm(model_tier="default", temperature=0)
         self.valuation_analyzer = ValuationAnalyzer()
         self.growth_screener = GrowthScreener()
         self.time_series_processor = TimeSeriesProcessor()
@@ -60,9 +52,9 @@ class EnhancedValuationAgent:
         self.agent_executor = self._create_agent()
     
     def _load_ml_models(self):
-        """Load trained LSTM-DCF and RF Ensemble models"""
+        """Load trained LSTM-DCF model"""
         # Load LSTM-DCF
-        lstm_path = MODELS_DIR / "lstm_dcf_final.pth"
+        lstm_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
         if lstm_path.exists():
             try:
                 self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3)
@@ -75,20 +67,6 @@ class EnhancedValuationAgent:
         else:
             self.logger.warning(f"LSTM-DCF model not found: {lstm_path}")
             self.lstm_model = None
-        
-        # Load RF Ensemble
-        rf_path = MODELS_DIR / "rf_ensemble.pkl"
-        if rf_path.exists():
-            try:
-                self.rf_model = RFEnsembleModel()
-                self.rf_model.load(str(rf_path))
-                self.logger.info("✓ RF Ensemble model loaded successfully")
-            except Exception as e:
-                self.logger.warning(f"Could not load RF Ensemble model: {e}")
-                self.rf_model = None
-        else:
-            self.logger.warning(f"RF Ensemble model not found: {rf_path}")
-            self.rf_model = None
     
     def _setup_tools(self) -> list:
         """Setup tools including traditional and ML-powered valuation"""
@@ -193,65 +171,12 @@ Note: Model trained on proxy FCFF, use as relative indicator only
                 self.logger.error(f"LSTM-DCF valuation error: {e}", exc_info=True)
                 return f"Error performing LSTM-DCF valuation: {str(e)}"
         
-        def rf_multi_metric_analysis_tool(ticker: str) -> str:
-            """Perform Random Forest multi-metric analysis"""
-            if not self.rf_model:
-                return "Error: RF Ensemble model not loaded. Please train the model first."
-            
-            try:
-                # Fetch stock data
-                stock_data = self.fetcher.fetch_stock_data(ticker)
-                
-                if stock_data is None or (isinstance(stock_data, pd.DataFrame) and stock_data.empty):
-                    return f"Error: Could not fetch data for {ticker}"
-                
-                # Prepare features
-                X = self.rf_model.prepare_features(stock_data)
-                
-                # Get prediction
-                result = self.rf_model.predict_score(X)
-                
-                # Get feature importance
-                importance = self.rf_model.get_feature_importance().head(5)
-                
-                # Format output
-                return f"""
-Random Forest Multi-Metric Analysis for {ticker}:
-
-Ensemble Score: {result['ensemble_score']:.4f}
-Undervalued Probability: {result.get('classification_prob', result.get('undervalued_probability', 0.5)):.2%}
-Classification: {"UNDERVALUED" if result['is_undervalued'] else "NOT UNDERVALUED"}
-
-Regression Prediction: {result.get('regression_score', result.get('regression_prediction', 0)):.4f}
-Classification Confidence: {result.get('classification_prob', result.get('classification_confidence', 0.5)):.2%}
-
-Top 5 Most Important Features:
-{chr(10).join([f"  {row['feature']}: {row['importance']:.4f}" for _, row in importance.head(5).iterrows()])}
-
-Recommendation: {"BUY" if result['is_undervalued'] and result.get('classification_prob', 0.5) > 0.7 else "HOLD" if result['ensemble_score'] > 0.5 else "AVOID"}
-"""
-            except Exception as e:
-                self.logger.error(f"RF analysis error: {e}", exc_info=True)
-                return f"Error performing RF analysis: {str(e)}"
-        
         def consensus_valuation_tool(ticker: str) -> str:
             """Generate consensus valuation from all models"""
             try:
                 # Get traditional valuation
                 trad_result = self.valuation_analyzer.analyze_stock(ticker)
                 trad_score = trad_result.get('valuation_score', 50) / 100 if 'error' not in trad_result else 0.5
-                
-                # Get RF score
-                rf_score = 0.5
-                if self.rf_model:
-                    try:
-                        stock_data = self.fetcher.fetch_stock_data(ticker)
-                        if stock_data is not None:
-                            X = self.rf_model.prepare_features(stock_data)
-                            rf_result = self.rf_model.predict_score(X)
-                            rf_score = rf_result['ensemble_score']
-                    except:
-                        pass
                 
                 # Get LSTM-DCF score (normalized valuation gap)
                 lstm_score = 0.5
@@ -294,10 +219,10 @@ Recommendation: {"BUY" if result['is_undervalued'] and result.get('classificatio
                     except:
                         pass
                 
-                # Calculate consensus
+                # Calculate consensus (LSTM-DCF + Traditional)
+                # Weights: LSTM-DCF 50%, Traditional 40%, Risk placeholder 10%
                 model_scores = {
                     'lstm_dcf': lstm_score,
-                    'rf_ensemble': rf_score,
                     'linear_valuation': trad_score,
                     'risk_classifier': 0.6  # Placeholder - would integrate actual risk model
                 }
@@ -311,7 +236,7 @@ Multi-Model Consensus Valuation for {ticker}:
 
 Consensus Score: {consensus['consensus_score']:.4f}
 Confidence Level: {consensus['confidence']:.2%}
-Models Agreement: {consensus['num_models']}/4 models active
+Models Agreement: {consensus['num_models']}/3 models active
 
 Final Assessment: {"UNDERVALUED" if consensus['is_undervalued'] else "NOT UNDERVALUED"}
 
@@ -371,14 +296,9 @@ Model Breakdown:
                 description="Advanced LSTM-DCF hybrid valuation using deep learning to forecast future cash flows. Use for sophisticated fair value estimation with time-series analysis."
             ),
             Tool(
-                name="RF_MultiMetric_Analysis",
-                func=rf_multi_metric_analysis_tool,
-                description="Random Forest ensemble analysis combining multiple valuation metrics. Use for machine learning-based undervalued stock detection with feature importance."
-            ),
-            Tool(
                 name="ConsensusValuation",
                 func=consensus_valuation_tool,
-                description="Multi-model consensus combining LSTM-DCF, Random Forest, and traditional models. Use for the most robust valuation with confidence scoring."
+                description="Multi-model consensus combining LSTM-DCF and traditional models. Use for robust valuation with confidence scoring."
             ),
             Tool(
                 name="StockComparison",
@@ -389,28 +309,32 @@ Model Breakdown:
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the agent executor"""
-        # Use react prompt from hub
-        prompt = hub.pull("hwchase17/react")
+    def _create_agent(self):
+        """Create the agent using langgraph"""
+        # System prompt for the agent
+        system_prompt = """You are an Enhanced Valuation Agent with access to advanced ML models for stock valuation.
+
+You have access to tools that can:
+1. Run LSTM-DCF deep learning model for fair value estimation
+2. Calculate consensus from multiple models
+3. Perform traditional valuation analysis
+4. Compare multiple stocks
+
+When analyzing a stock:
+1. Use ComprehensiveValuation for traditional metrics
+2. Use LSTM_DCF_Valuation for ML-powered fair value
+3. Use ConsensusValuation for combined assessment
+
+Provide ML-powered valuation insights with confidence levels."""
         
-        # Create agent
+        # Create agent using langgraph prebuilt
         agent = create_react_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=prompt
+            self.llm,
+            self.tools,
+            prompt=system_prompt
         )
         
-        # Create executor
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5
-        )
-        
-        return agent_executor
+        return agent
     
     def analyze(self, query: str) -> str:
         """
@@ -423,8 +347,11 @@ Model Breakdown:
             Analysis result as string
         """
         try:
-            result = self.agent_executor.invoke({"input": query})
-            return result['output']
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            return result["messages"][-1].content if result.get("messages") else "No response"
         except Exception as e:
             self.logger.error(f"Agent analysis error: {e}", exc_info=True)
             return f"Error during analysis: {str(e)}"

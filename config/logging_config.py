@@ -1,5 +1,5 @@
 """
-Logging configuration for JobHedge Investor
+Logging configuration for Emetix
 """
 import logging
 import sys

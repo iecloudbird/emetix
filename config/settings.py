@@ -1,5 +1,5 @@
 """
-Configuration settings for JobHedge Investor
+Configuration settings for Emetix
 """
 import os
 from pathlib import Path
@@ -13,9 +13,27 @@ load_dotenv(BASE_DIR / '.env')
 
 # API Keys (load from environment variables)
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
+GOOGLE_GEMINI_API_KEY = os.getenv('GOOGLE_GEMINI_API_KEY', '')
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', '')
 NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', '')
+
+# LLM Provider Configuration
+# Options: "gemini", "groq", "auto"
+# - gemini: Use Google Gemini (1M tokens/min, but 1500 RPD limit)
+# - groq: Use Groq (6K tokens/min, unlimited RPD)
+# - auto: Try Gemini first, fallback to Groq on rate limit
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'gemini')  # Using Gemini for better token allowance
+
+# MongoDB Atlas Configuration (primary storage for watchlists, education)
+# Get connection string from: https://cloud.mongodb.com/
+MONGODB_URI = os.getenv('MONGODB_URI', '')  # mongodb+srv://user:pass@cluster.mongodb.net/
+MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'emetix_pipeline')
+
+
+def get_env(key: str, default: str = '') -> str:
+    """Helper function to get environment variables"""
+    return os.getenv(key, default)
 
 # Data paths
 DATA_DIR = BASE_DIR / 'data'

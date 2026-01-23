@@ -14,10 +14,18 @@ class ConsensusScorer:
     """
     Multi-model consensus scoring with enhanced weighting
     
-    Enhanced Weights:
-    - LSTM-DCF: 70% (Truth: Long-term fair value)
-    - RF Risk+Sentiment: 20% (Brake: Short-term risk + market mood) 
-    - P/E Sanity Check: 10% (Anchor: Market reality check)
+    ARCHITECTURE SHIFT (Jan 2025):
+    RF Ensemble was found to use P/E ratio at 99.93% importance,
+    making it essentially just a P/E filter with no multi-factor value.
+    
+    NEW Weights (Jan 2025):
+    - LSTM-DCF: 50% (Primary: Long-term fair value from growth forecast)
+    - GARP Score: 25% (Transparent Forward P/E + PEG, replaces RF)
+    - Risk Score: 25% (Beta + volatility filter for low-risk focus)
+    
+    DEPRECATED:
+    - RF Ensemble (was 30%, now 0%)
+    - P/E Sanity (absorbed into GARP score)
     """
     
     def __init__(
@@ -31,9 +39,9 @@ class ConsensusScorer:
             weights: Custom weights for each model (optional)
         """
         self.weights = weights or {
-            'lstm_dcf': 0.70,           # Truth: Fair value (primary signal)
-            'rf_risk_sentiment': 0.20,  # Brake: Risk + sentiment filter
-            'pe_sanity_score': 0.10     # Anchor: Market reality check
+            'lstm_dcf': 0.50,      # Primary: Fair value from growth forecast
+            'garp_score': 0.25,   # Transparent Forward P/E + PEG (replaces RF)
+            'risk_score': 0.25    # Beta + volatility filter
         }
         
         # Normalize weights to sum to 1.0

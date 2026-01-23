@@ -2,15 +2,13 @@
 Supervisor Agent - Orchestrates multi-agent stock analysis workflow
 Part of Multi-Agent Stock Analysis System
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import json
 from typing import Dict, List, Optional
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
+from src.utils.llm_provider import get_llm
 
 # Import specialized agents
 from src.agents.data_fetcher_agent import DataFetcherAgent
@@ -25,36 +23,15 @@ logger = get_logger(__name__)
 class SupervisorAgent:
     """
     Orchestrates the multi-agent workflow for Emetix
-    Uses Groq Llama3-70B for high-level decision-making
-    
-    Workflow:
-    1. Routes user queries to appropriate agents
-    2. Triggers parallel/sequential agent execution
-    3. Aggregates results from multiple agents
-    4. Resolves conflicts (e.g., sentiment vs fundamentals)
-    5. Formats cohesive final response
-    
-    Supported queries:
-    - "Build watchlist for [tickers] with weights [...]"
-    - "Analyze [ticker] for long-term value"
-    - "Find contrarian opportunities in [sector]"
-    - "Get ML-powered valuation for [ticker]"
-    - "Update watchlist scores"
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize Supervisor Agent
-        
-        Args:
-            api_key: Groq API key
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        # Use Llama 3.3 70B for complex orchestration
-        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+        # Use large model tier for complex orchestration with slight temperature
+        self.llm = get_llm(model_tier="large", temperature=0.2)
         
         # Initialize specialized agents
         try:
@@ -99,9 +76,9 @@ class SupervisorAgent:
                 except Exception as e:
                     results['sentiment'] = f"Sentiment analysis error: {str(e)}"
                 
-                # Phase 2.5: ML-Powered Valuation (LSTM-DCF + RF Ensemble + Consensus)
+                # Phase 2.5: ML-Powered Valuation (LSTM-DCF + Consensus)
                 try:
-                    ml_query = f"Provide comprehensive ML-powered valuation for {ticker} using LSTM-DCF, RF Ensemble, and consensus scoring."
+                    ml_query = f"Provide comprehensive ML-powered valuation for {ticker} using LSTM-DCF and consensus scoring."
                     ml_valuation = self.enhanced_valuation.analyze(ml_query)
                     results['ml_valuation'] = ml_valuation
                 except Exception as e:
@@ -290,7 +267,7 @@ Opportunities:
         
         def ml_powered_valuation_tool(ticker: str) -> str:
             """
-            Get ML-powered valuation using LSTM-DCF, RF Ensemble, and consensus scoring
+            Get ML-powered valuation using LSTM-DCF and consensus scoring
             
             Args:
                 ticker: Stock ticker symbol
@@ -299,7 +276,7 @@ Opportunities:
                 Comprehensive ML valuation with fair value estimates
             """
             try:
-                query = f"Provide comprehensive ML-powered valuation for {ticker}. Include LSTM-DCF fair value, RF Ensemble score, and consensus valuation. Explain if stock is undervalued or overvalued."
+                query = f"Provide comprehensive ML-powered valuation for {ticker}. Include LSTM-DCF fair value and consensus valuation. Explain if stock is undervalued or overvalued."
                 
                 ml_result = self.enhanced_valuation.analyze(query)
                 
@@ -332,28 +309,43 @@ Opportunities:
             Tool(
                 name="MLPoweredValuation",
                 func=ml_powered_valuation_tool,
-                description="Get ML-powered stock valuation using LSTM-DCF (deep learning fair value), RF Ensemble (multi-metric scoring), and consensus scoring (4-model weighted voting). Provides fair value estimates with confidence intervals. Use when user asks for ML valuation, AI analysis, or advanced pricing models."
+                description="Get ML-powered stock valuation using LSTM-DCF (deep learning fair value) and consensus scoring. Provides fair value estimates with confidence intervals. Use when user asks for ML valuation, AI analysis, or advanced pricing models."
             )
         ]
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent executor"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Supervisor Agent that orchestrates multiple specialized agents for comprehensive stock analysis.
+
+You have access to tools that can:
+1. Analyze fundamentals (growth, valuation, health, profitability, DCF)
+2. Analyze market sentiment (news, social, analyst ratings)
+3. Run ML-powered valuation models (LSTM-DCF)
+4. Assess investment risk (beta, volatility, debt levels)
+5. Screen for macro-economic factors
+
+When analyzing a stock comprehensively:
+1. Use FundamentalsAnalysis for deep financial metrics
+2. Use SentimentAnalysis for market psychology
+3. Use MLValuation for fair value estimates
+4. Use RiskAssessment for safety evaluation
+5. Use MacroScreening for economic context
+
+Coordinate all agents and synthesize insights into actionable investment recommendations.
+Focus on identifying low-risk, long-term opportunities vs speculative plays."""
             
-            agent = create_react_agent(self.llm, self.tools, prompt)
-            
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=15  # Increased from 8 to handle complex multi-agent orchestration
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating Supervisor Agent: {str(e)}")
@@ -372,13 +364,17 @@ Opportunities:
         try:
             query = f"Provide comprehensive investment analysis for {ticker}. Coordinate all specialized agents to assess fundamentals, sentiment, valuation (DCF), and risk. Focus on identifying whether this is a low-risk long-term opportunity or a speculative play."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'ticker': ticker,
-                'comprehensive_analysis': result['output'],
+                'comprehensive_analysis': output,
                 'agent': 'SupervisorAgent',
-                'model': 'llama3-70b-8192'
+                'model': 'gemini-2.5-flash'
             }
             
         except Exception as e:
@@ -447,6 +443,29 @@ Opportunities:
         except Exception as e:
             self.logger.error(f"Error scanning for contrarian value: {str(e)}")
             return {'error': str(e)}
+    
+    # Public API methods (for FastAPI routes)
+    
+    def orchestrate_stock_analysis(self, ticker: str) -> Dict:
+        """
+        API-compatible method for comprehensive stock analysis.
+        Wraps analyze_stock_comprehensive for FastAPI routes.
+        """
+        return self.analyze_stock_comprehensive(ticker)
+    
+    def build_intelligent_watchlist(self, tickers: List[str]) -> Dict:
+        """
+        API-compatible method for building intelligent watchlist.
+        Wraps build_watchlist_for_tickers for FastAPI routes.
+        """
+        return self.build_watchlist_for_tickers(tickers)
+    
+    def find_contrarian_opportunities(self, tickers: List[str]) -> Dict:
+        """
+        API-compatible method for finding contrarian opportunities.
+        Wraps scan_for_contrarian_value for FastAPI routes.
+        """
+        return self.scan_for_contrarian_value(tickers)
 
 
 # Example usage

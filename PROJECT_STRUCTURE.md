@@ -1,13 +1,13 @@
-# JobHedge Investor - Project Structure
+# Emetix - Project Structure
 
 ## Overview
 
-AI-Powered Stock Risk Assessment Platform with AI Agents for Portfolio Management
+AI-Powered Multi-Agent Low-Risk Stock Watchlist & Risk Management Platform
 
 ## Directory Structure
 
 ```
-jobhedge-investor/
+emetix/
 │
 ├── config/                          # Configuration files
 │   ├── __init__.py

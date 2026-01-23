@@ -2,16 +2,14 @@
 Data Fetcher Agent - Specialized for gathering raw financial data
 Part of Multi-Agent Stock Analysis System
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import yfinance as yf
 import pandas as pd
 from typing import Dict, List, Optional
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
+from src.utils.llm_provider import get_llm
 
 logger = get_logger(__name__)
 
@@ -19,21 +17,15 @@ logger = get_logger(__name__)
 class DataFetcherAgent:
     """
     Specialized agent for fetching raw fundamentals, historical data, and FCF metrics
-    Uses Groq Llama3-8B for fast data parsing and validation
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize Data Fetcher Agent
-        
-        Args:
-            api_key: Groq API key
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        self.llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+        # Use fast model tier for data fetching tasks
+        self.llm = get_llm(model_tier="fast", temperature=0)
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
     
@@ -204,23 +196,34 @@ class DataFetcherAgent:
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent executor"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            # Use standard ReAct prompt
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Data Fetcher Agent specialized in gathering comprehensive financial data.
             
-            agent = create_react_agent(self.llm, self.tools, prompt)
+You have access to tools that can:
+1. Fetch stock fundamentals (P/E, Market Cap, EPS, etc.)
+2. Fetch Free Cash Flow (FCF) data for valuation
+3. Fetch historical price data with technical indicators
+4. Fetch peer/competitor information
+
+When fetching data:
+1. Use Fundamentals tool for basic metrics
+2. Use FCFData tool for cash flow analysis
+3. Use HistoricalPrices tool for price trends
+4. Use PeerData tool for competitor comparison
+
+Return structured, actionable data for analysis."""
             
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=10  # Increased from 3 to allow complex multi-source data fetching
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating Data Fetcher Agent: {str(e)}")
@@ -239,13 +242,17 @@ class DataFetcherAgent:
         try:
             query = f"Fetch complete financial dataset for {ticker} including fundamentals, FCF data, historical prices, and peer information. Provide structured output for each category."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'ticker': ticker,
-                'data': result['output'],
+                'data': output,
                 'agent': 'DataFetcherAgent',
-                'model': 'llama3-8b-8192'
+                'model': 'gemini-2.5-flash-lite'
             }
             
         except Exception as e:

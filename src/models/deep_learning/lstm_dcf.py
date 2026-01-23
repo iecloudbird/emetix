@@ -73,22 +73,33 @@ class LSTMDCFModel(pl.LightningModule):
         # Loss function
         self.criterion = nn.MSELoss()
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, clamp_output: bool = True) -> torch.Tensor:
         """
-        Forward pass
+        Forward pass with optional output clamping
         
         Args:
             x: (batch, sequence_length, features)
+            clamp_output: If True, clamp predictions to realistic range [-50%, +100%]
             
         Returns:
             Predicted growth rates (batch, output_size)
             - output_size=2: [revenue_growth, fcf_growth]
             - output_size=3: [revenue_growth, fcf_growth, ebitda_growth]
+            
+        Note:
+            Output is in PERCENTAGE terms (e.g., 15.0 means 15% growth)
+            Clamped to [-50, 100] to prevent unrealistic predictions
         """
         lstm_out, (hidden, cell) = self.lstm(x)
         # Use last timestep output
         last_output = lstm_out[:, -1, :]
         prediction = self.fc(last_output)
+        
+        # Clamp outputs to realistic growth rate ranges (in percentage terms)
+        # -50% to +100% growth is the reasonable range for annual growth rates
+        if clamp_output:
+            prediction = torch.clamp(prediction, min=-50.0, max=100.0)
+        
         return prediction
     
     def training_step(self, batch, batch_idx):
@@ -314,7 +325,125 @@ class LSTMDCFModel(pl.LightningModule):
         logger.info(f"LSTM-DCF model saved: {save_path}")
     
     def load_model(self, path: str):
-        """Load model weights"""
-        self.load_state_dict(torch.load(path, map_location='cpu'))
-        self.eval()
-        logger.info(f"LSTM-DCF model loaded: {path}")
+        """Load model weights (compatible with PyTorch 2.6+ and enhanced format)"""
+        # weights_only=False required for Lightning checkpoints
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        
+        # Handle enhanced format with metadata
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            self.load_state_dict(checkpoint['model_state_dict'])
+            logger.info(f"LSTM-DCF model loaded (enhanced format): {path}")
+            self.eval()
+            # Return metadata for caller if needed
+            return {
+                'hyperparameters': checkpoint.get('hyperparameters', {}),
+                'feature_cols': checkpoint.get('feature_cols', []),
+                'sequence_length': checkpoint.get('sequence_length', 60),
+                'scaler': checkpoint.get('scaler', None)
+            }
+        else:
+            # Legacy format - direct state dict
+            self.load_state_dict(checkpoint)
+            logger.info(f"LSTM-DCF model loaded (legacy format): {path}")
+            self.eval()
+            return None
+    
+    @classmethod
+    def from_checkpoint(cls, path: str) -> tuple['LSTMDCFModel', dict]:
+        """
+        Load model from checkpoint, automatically inferring hyperparameters.
+        Supports both v1 and v2 model formats.
+        
+        Args:
+            path: Path to .pth checkpoint file
+            
+        Returns:
+            Tuple of (model, metadata) where metadata contains feature_cols, scaler, etc.
+            
+        Example:
+            model, metadata = LSTMDCFModel.from_checkpoint("models/lstm_dcf_enhanced.pth")
+        """
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        
+        if isinstance(checkpoint, dict) and 'hyperparameters' in checkpoint:
+            hp = checkpoint['hyperparameters']
+            # Parse hyperparameters (can be dict or string representation)
+            if isinstance(hp, str):
+                # Parse from Lightning's string format
+                hp_dict = {}
+                for line in hp.strip().split('\n'):
+                    if ':' in line:
+                        key, val = line.split(':', 1)
+                        key = key.strip().strip('"')
+                        val = val.strip()
+                        try:
+                            hp_dict[key] = float(val) if '.' in val else int(val)
+                        except ValueError:
+                            hp_dict[key] = val
+                hp = hp_dict
+            
+            # Check if this is a v2 model (has feature_scaler and BatchNorm)
+            is_v2 = checkpoint.get('model_version') == 'v2' or 'feature_scaler' in checkpoint
+            
+            if is_v2:
+                # V2 model uses LSTMDCFModelV2 from train_lstm_dcf_v2.py
+                # But we can still load it with this class if architecture matches
+                logger.info(f"Detected v2 model format at {path}")
+                
+                # For v2 models, we need to handle the BatchNorm layer
+                # Create model with v1 architecture but load compatible weights
+                model = cls(
+                    input_size=hp.get('input_size', 16),
+                    hidden_size=hp.get('hidden_size', 128),
+                    num_layers=hp.get('num_layers', 2),  # v2 uses 2 layers
+                    dropout=hp.get('dropout', 0.3),
+                    output_size=hp.get('output_size', 2),
+                    wacc=hp.get('wacc', 0.08),
+                    terminal_growth=hp.get('terminal_growth', 0.03)
+                )
+                
+                # Filter out BatchNorm weights if present (v2 has input_norm layer)
+                state_dict = checkpoint['model_state_dict']
+                filtered_state = {k: v for k, v in state_dict.items() 
+                                  if not k.startswith('input_norm')}
+                
+                # Try to load - may fail if architectures don't match
+                try:
+                    model.load_state_dict(filtered_state, strict=False)
+                    logger.warning("V2 model loaded with partial compatibility (BatchNorm skipped)")
+                except Exception as e:
+                    logger.error(f"Failed to load v2 model with v1 class: {e}")
+                    raise ValueError(
+                        f"V2 model at {path} requires LSTMDCFModelV2 from scripts.lstm.train_lstm_dcf_v2. "
+                        "Use that class directly for full v2 support."
+                    )
+            else:
+                # V1 model - standard loading
+                model = cls(
+                    input_size=hp.get('input_size', 16),
+                    hidden_size=hp.get('hidden_size', 128),
+                    num_layers=hp.get('num_layers', 3),
+                    dropout=hp.get('dropout', 0.2),
+                    output_size=hp.get('output_size', 2),
+                    wacc=hp.get('wacc', 0.08),
+                    terminal_growth=hp.get('terminal_growth', 0.03)
+                )
+                model.load_state_dict(checkpoint['model_state_dict'])
+            
+            model.eval()
+            
+            # Build metadata - handle both v1 and v2 scaler formats
+            metadata = {
+                'hyperparameters': hp,
+                'feature_cols': checkpoint.get('feature_cols', []),
+                'target_cols': checkpoint.get('target_cols', []),
+                'sequence_length': checkpoint.get('sequence_length', 8 if is_v2 else 60),
+                'scaler': checkpoint.get('scaler', None),
+                'feature_scaler': checkpoint.get('feature_scaler', None),
+                'target_scaler': checkpoint.get('target_scaler', None),
+                'model_version': 'v2' if is_v2 else 'v1'
+            }
+            logger.info(f"LSTM-DCF model loaded from checkpoint: {path} (version: {metadata['model_version']})")
+            return model, metadata
+        else:
+            raise ValueError(f"Checkpoint at {path} is not in enhanced format. Use load_model() instead.")

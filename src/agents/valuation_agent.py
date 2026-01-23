@@ -2,15 +2,13 @@
 Valuation Agent using LangChain
 Integrates comprehensive valuation analysis and growth screening capabilities
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import pandas as pd
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
 from src.analysis import ValuationAnalyzer, GrowthScreener
+from src.utils.llm_provider import get_llm
 
 logger = get_logger(__name__)
 
@@ -20,18 +18,13 @@ class ValuationAgent:
     AI Agent for comprehensive stock valuation analysis using LangChain
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize the Valuation Agent
-        
-        Args:
-            api_key: Groq API key for LLM
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        self.llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+        # Use default model tier for valuation analysis
+        self.llm = get_llm(model_tier="default", temperature=0)
         self.valuation_analyzer = ValuationAnalyzer()
         self.growth_screener = GrowthScreener()
         self.tools = self._setup_tools()
@@ -207,25 +200,33 @@ Investment Thesis: {result['investment_thesis']}
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            # Pull React prompt from LangChain hub
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Stock Valuation Agent specialized in analyzing stock fair values and growth opportunities.
             
-            # Create agent
-            agent = create_react_agent(self.llm, self.tools, prompt)
+You have access to tools that can:
+1. Fetch comprehensive stock fundamentals and metrics
+2. Calculate detailed fair value estimates using DCF methodology
+3. Screen for growth opportunities using GARP criteria
+
+When analyzing a stock:
+1. First fetch the stock data using StockFundamentals tool
+2. Calculate the fair value using FairValueCalculator tool
+3. Assess growth potential using GrowthScreener tool
+4. Provide a comprehensive investment recommendation
+
+Always base your analysis on quantitative data and provide clear reasoning."""
             
-            # Create executor
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=5
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating valuation agent: {str(e)}")
@@ -244,11 +245,15 @@ Investment Thesis: {result['investment_thesis']}
         try:
             query = f"Provide a comprehensive investment analysis for {ticker} including detailed valuation metrics, growth opportunity assessment, and investment recommendation with reasoning."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'ticker': ticker,
-                'analysis': result['output'],
+                'analysis': output,
                 'agent': 'ValuationAgent'
             }
             

@@ -2,16 +2,14 @@
 Sentiment Analyzer Agent - Specialized for market sentiment analysis
 Part of Multi-Agent Stock Analysis System
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
+from src.utils.llm_provider import get_llm
 
 logger = get_logger(__name__)
 
@@ -19,27 +17,15 @@ logger = get_logger(__name__)
 class SentimentAnalyzerAgent:
     """
     Specialized agent for scanning and scoring market sentiment
-    Uses Groq Mixtral-8x7B for nuanced text analysis
-    
-    Sentiment sources:
-    - Financial news (NewsAPI, Yahoo Finance)
-    - Social media signals (Twitter/X)
-    - Analyst ratings and upgrades/downgrades
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize Sentiment Analyzer Agent
-        
-        Args:
-            api_key: Groq API key
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        # Use Llama 3.1 for better sentiment analysis
-        self.llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.3)
+        # Use fast model tier with slight temperature for nuanced sentiment
+        self.llm = get_llm(model_tier="fast", temperature=0.3)
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
     
@@ -232,22 +218,33 @@ Top Recent Headlines:
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent executor"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Sentiment Analyzer Agent specialized in market sentiment and investor psychology.
             
-            agent = create_react_agent(self.llm, self.tools, prompt)
+You have access to tools that can:
+1. Analyze news sentiment from recent headlines
+2. Analyze social media sentiment from platforms
+3. Aggregate analyst ratings and price targets
+
+When analyzing sentiment:
+1. Gather news sentiment using NewsSentiment tool
+2. Check social media buzz using SocialSentiment tool
+3. Review analyst consensus using AnalystRatings tool
+4. Provide an overall sentiment score and market psychology assessment
+
+Be objective and identify both bullish and bearish signals."""
             
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=8  # Balanced: enough for news+social+analyst, but won't hit rate limits
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating Sentiment Analyzer Agent: {str(e)}")
@@ -266,13 +263,17 @@ Top Recent Headlines:
         try:
             query = f"Provide comprehensive sentiment analysis for {ticker} by analyzing news sentiment, social sentiment, and analyst ratings. Calculate an aggregated sentiment score and explain the market psychology."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'ticker': ticker,
-                'sentiment_analysis': result['output'],
+                'sentiment_analysis': output,
                 'agent': 'SentimentAnalyzerAgent',
-                'model': 'mixtral-8x7b-32768'
+                'model': 'gemini-2.5-flash-lite'
             }
             
         except Exception as e:

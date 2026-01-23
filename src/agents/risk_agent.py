@@ -2,14 +2,12 @@
 Risk Agent using LangChain
 Based on Phase 2 draft code
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import pandas as pd
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
+from src.utils.llm_provider import get_llm
 
 logger = get_logger(__name__)
 
@@ -19,18 +17,13 @@ class RiskAgent:
     AI Agent for stock risk assessment using LangChain
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize the Risk Agent
-        
-        Args:
-            api_key: Groq API key for LLM
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        self.llm = ChatGroq(model="llama3-8b-8192", temperature=0)
+        # Use LLM provider (defaults to Gemini for better free tier)
+        self.llm = get_llm(model_tier="default", temperature=0)
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
     
@@ -91,25 +84,31 @@ class RiskAgent:
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            # Pull React prompt from LangChain hub
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Risk Assessment Agent specialized in analyzing stock investment risks.
             
-            # Create agent
-            agent = create_react_agent(self.llm, self.tools, prompt)
+You have access to tools that can:
+1. Fetch stock fundamentals and metrics (P/E ratio, debt/equity, beta, volatility)
+2. Calculate risk scores based on key metrics
+
+When assessing a stock:
+1. First fetch the stock data using StockValuation tool
+2. Then calculate the risk score using RiskScoring tool
+3. Provide a comprehensive analysis with your recommendation
+
+Always be thorough and base your analysis on the data retrieved."""
             
-            # Create executor
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=5
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating agent: {str(e)}")
@@ -128,7 +127,39 @@ class RiskAgent:
         try:
             query = f"Assess the investment risk for stock ticker {ticker}. Provide a comprehensive analysis including risk level, key metrics, and recommendation."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
+            
+            return {
+                'ticker': ticker,
+                'analysis': output,
+                'agent': 'RiskAgent'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in risk assessment: {str(e)}")
+            return {
+                'ticker': ticker,
+                'error': str(e),
+                'agent': 'RiskAgent'
+            }
+    
+    def assess_risk_with_context(self, ticker: str, context_query: str) -> dict:
+        """
+        Assess risk with comprehensive analysis context
+        
+        Args:
+            ticker: Stock ticker symbol
+            context_query: Detailed query with all analysis data
+        
+        Returns:
+            Dictionary with contextual risk assessment
+        """
+        try:
+            result = self.agent_executor.invoke({"input": context_query})
             
             return {
                 'ticker': ticker,
@@ -137,7 +168,7 @@ class RiskAgent:
             }
             
         except Exception as e:
-            self.logger.error(f"Error in risk assessment: {str(e)}")
+            self.logger.error(f"Error in contextual risk assessment: {str(e)}")
             return {
                 'ticker': ticker,
                 'error': str(e),

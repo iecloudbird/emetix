@@ -2,17 +2,15 @@
 Fundamentals Analyzer Agent - Specialized for financial metrics computation
 Part of Multi-Agent Stock Analysis System
 """
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_groq import ChatGroq
-from langchain.tools import Tool
-from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool
 import os
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional
-from config.settings import GROQ_API_KEY
 from config.logging_config import get_logger
 from src.models.valuation.fcf_dcf_model import FCFDCFModel
+from src.utils.llm_provider import get_llm
 
 logger = get_logger(__name__)
 
@@ -20,29 +18,15 @@ logger = get_logger(__name__)
 class FundamentalsAnalyzerAgent:
     """
     Specialized agent for computing and interpreting key metrics
-    Uses Groq Llama3-70B for strong financial reasoning
-    
-    Computes:
-    - Growth rates (revenue, earnings, FCF)
-    - Valuation ratios (P/E, P/B, PEG, EV/EBITDA)
-    - Financial health (debt ratios, liquidity)
-    - Profitability (ROE, margins)
-    - DCF-based intrinsic value
     """
     
-    def __init__(self, api_key: str = GROQ_API_KEY):
+    def __init__(self, api_key: str = None):
         """
         Initialize Fundamentals Analyzer Agent
-        
-        Args:
-            api_key: Groq API key
         """
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-        
         self.logger = logger
-        # Use Llama 3.3 70B for complex financial reasoning
-        self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        # Use large model tier for complex financial reasoning
+        self.llm = get_llm(model_tier="large", temperature=0)
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
         self.dcf_model = FCFDCFModel()
@@ -294,22 +278,36 @@ class FundamentalsAnalyzerAgent:
         
         return tools
     
-    def _create_agent(self) -> AgentExecutor:
-        """Create the LangChain agent executor"""
+    def _create_agent(self):
+        """Create the LangChain agent using langgraph"""
         try:
-            prompt = hub.pull("hwchase17/react")
+            # System prompt for the agent
+            system_prompt = """You are a Fundamentals Analyzer Agent specialized in deep financial analysis.
             
-            agent = create_react_agent(self.llm, self.tools, prompt)
+You have access to tools that can:
+1. Analyze growth metrics (revenue growth, earnings growth)
+2. Calculate valuation ratios (P/E, P/B, PEG)
+3. Assess financial health (debt/equity, current ratio)
+4. Evaluate profitability (ROE, margins)
+5. Calculate intrinsic value using DCF methodology
+
+When analyzing fundamentals:
+1. Calculate growth metrics using GrowthMetrics tool
+2. Evaluate valuation ratios using ValuationRatios tool
+3. Check financial health using FinancialHealth tool
+4. Review profitability using Profitability tool
+5. Estimate intrinsic value using DCFValuation tool
+
+Provide data-driven analysis with clear investment implications."""
             
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=self.tools,
-                verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=10  # Increased from 6 to handle all 5 metric calculations + DCF
+            # Create agent using langgraph prebuilt
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=system_prompt
             )
             
-            return agent_executor
+            return agent
             
         except Exception as e:
             self.logger.error(f"Error creating Fundamentals Analyzer Agent: {str(e)}")
@@ -328,13 +326,17 @@ class FundamentalsAnalyzerAgent:
         try:
             query = f"Perform comprehensive fundamental analysis for {ticker}. Calculate all key metrics: growth, valuation ratios, financial health, profitability, and DCF intrinsic value. Provide a clear investment recommendation based on fundamentals."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'ticker': ticker,
-                'fundamental_analysis': result['output'],
+                'fundamental_analysis': output,
                 'agent': 'FundamentalsAnalyzerAgent',
-                'model': 'llama3-70b-8192'
+                'model': 'gemini-2.5-flash'
             }
             
         except Exception as e:
@@ -355,11 +357,15 @@ class FundamentalsAnalyzerAgent:
             tickers_str = ", ".join(tickers)
             query = f"Compare fundamental metrics across these peer stocks: {tickers_str}. Focus on valuation (PE, PEG), growth rates, profitability (ROE), and financial health. Rank them from best to worst investment based on fundamentals."
             
-            result = self.agent_executor.invoke({"input": query})
+            # New langgraph API uses messages format
+            result = self.agent_executor.invoke({"messages": [("user", query)]})
+            
+            # Extract the final response
+            output = result["messages"][-1].content if result.get("messages") else "No response"
             
             return {
                 'tickers': tickers,
-                'peer_comparison': result['output'],
+                'peer_comparison': output,
                 'agent': 'FundamentalsAnalyzerAgent'
             }
             

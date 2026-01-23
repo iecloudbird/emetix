@@ -19,9 +19,8 @@ scripts/
 │   ├── train_lstm_growth_forecaster.py   # Growth forecaster variant
 │   └── check_lstm_status.py              # Check training progress
 │
-├── 📂 rf/                                 # Random Forest Related
-│   ├── train_rf_risk_sentiment.py        # ⭐ NEW: Train RF with sentiment
-│   └── train_rf_ensemble.py              # Original RF ensemble
+├── 📂 rf/                                 # Random Forest Related (DEPRECATED)
+│   └── train_rf_risk_sentiment.py        # RF Risk+Sentiment (archived)
 │
 ├── 📂 consensus/                          # Consensus System
 │   └── test_reverse_dcf.py               # ⭐ NEW: Reverse DCF validator

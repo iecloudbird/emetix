@@ -118,8 +118,7 @@ def main():
     logger.info(f"✓ Traditional data: {len(data)} stocks")
     logger.info(f"✓ LSTM training data: {lstm_data['ticker'].nunique() if not lstm_data.empty else 0} stocks")
     logger.info("\nNext steps:")
-    logger.info("  1. Train LSTM-DCF: python scripts/train_lstm_dcf.py")
-    logger.info("  2. Train RF Ensemble: python scripts/train_rf_ensemble.py")
+    logger.info("  1. Train LSTM-DCF: python scripts/lstm/train_lstm_dcf_enhanced.py")
     logger.info("=" * 80)
 
 

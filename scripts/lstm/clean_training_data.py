@@ -4,7 +4,7 @@ Fixes data quality issues for LSTM-DCF training
 """
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pandas as pd
 import numpy as np
@@ -114,7 +114,7 @@ class TrainingDataCleaner:
         
         return df_clean
     
-    def filter_short_sequences(self, df: pd.DataFrame, min_quarters: int = 60) -> pd.DataFrame:
+    def filter_short_sequences(self, df: pd.DataFrame, min_quarters: int = 20) -> pd.DataFrame:
         """Remove tickers with insufficient history"""
         initial_tickers = df['ticker'].nunique()
         
@@ -223,7 +223,7 @@ class TrainingDataCleaner:
         
         # Step 5: Filter short sequences
         self.logger.info(f"\n--- STEP 5: Filter Short Sequences ---")
-        df = self.filter_short_sequences(df, min_quarters=60)
+        df = self.filter_short_sequences(df, min_quarters=20)
         
         # Step 6: Add robust features
         self.logger.info(f"\n--- STEP 6: Add Robust Features ---")
