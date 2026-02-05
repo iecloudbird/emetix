@@ -33,6 +33,8 @@ import {
   Loader2,
   Lightbulb,
   Zap,
+  RefreshCw,
+  Clock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -101,28 +103,28 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
 
     // Handle matched markdown
     if (match[2]) {
-      // **bold**
+      // **bold** - Enhanced visibility
       parts.push(
-        <strong key={key++} className="font-semibold">
+        <strong key={key++} className="font-bold text-foreground">
           {match[2]}
-        </strong>
+        </strong>,
       );
     } else if (match[3]) {
       // *italic*
       parts.push(
-        <em key={key++} className="italic">
+        <em key={key++} className="italic text-foreground/90">
           {match[3]}
-        </em>
+        </em>,
       );
     } else if (match[4]) {
-      // `code`
+      // `code` - Better contrast
       parts.push(
         <code
           key={key++}
-          className="px-1 py-0.5 rounded bg-muted text-xs font-mono"
+          className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-sm font-mono text-slate-800 dark:text-slate-200"
         >
           {match[4]}
-        </code>
+        </code>,
       );
     }
 
@@ -154,70 +156,75 @@ function MarkdownContent({ content }: { content: string }) {
       continue;
     }
 
-    // Headers ##
+    // Headers ## - Key section headers
     if (trimmed.startsWith("## ")) {
       elements.push(
         <h3
           key={key++}
-          className="font-semibold text-foreground mt-3 mb-1 text-sm"
+          className="font-bold text-base text-slate-900 dark:text-slate-100 mt-4 mb-2 border-b border-slate-200 dark:border-slate-700 pb-1"
         >
           {parseInlineMarkdown(trimmed.slice(3))}
-        </h3>
+        </h3>,
       );
       continue;
     }
 
-    // Headers ###
+    // Headers ### - Sub-section headers
     if (trimmed.startsWith("### ")) {
       elements.push(
         <h4
           key={key++}
-          className="font-medium text-foreground mt-2 mb-1 text-sm"
+          className="font-semibold text-sm text-slate-800 dark:text-slate-200 mt-3 mb-1.5"
         >
           {parseInlineMarkdown(trimmed.slice(4))}
-        </h4>
+        </h4>,
       );
       continue;
     }
 
-    // Bullet points
+    // Bullet points - More readable
     if (
       trimmed.startsWith("- ") ||
       trimmed.startsWith("* ") ||
       trimmed.startsWith("• ")
     ) {
       elements.push(
-        <div key={key++} className="flex items-start gap-2 ml-2 my-0.5">
-          <span className="text-primary mt-0.5">•</span>
-          <span className="text-sm">
+        <div key={key++} className="flex items-start gap-2.5 ml-3 my-1">
+          <span className="text-blue-600 dark:text-blue-400 mt-1 text-sm">
+            •
+          </span>
+          <span className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
             {parseInlineMarkdown(trimmed.slice(2))}
           </span>
-        </div>
+        </div>,
       );
       continue;
     }
 
-    // Numbered list
+    // Numbered list - Better visibility
     const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
     if (numberedMatch) {
       elements.push(
-        <div key={key++} className="flex items-start gap-2 ml-2 my-0.5">
-          <span className="text-primary font-medium text-sm">
+        <div key={key++} className="flex items-start gap-2.5 ml-3 my-1">
+          <span className="text-blue-600 dark:text-blue-400 font-semibold text-sm min-w-[1.25rem]">
             {numberedMatch[1]}.
           </span>
-          <span className="text-sm">
+          <span className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
             {parseInlineMarkdown(numberedMatch[2])}
           </span>
-        </div>
+        </div>,
       );
       continue;
     }
 
-    // Regular paragraph
+    // Regular paragraph - Improved readability
     elements.push(
-      <p key={key++} className="text-sm leading-relaxed my-1">
+      <p
+        key={key++}
+        className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed my-1.5"
+      >
         {parseInlineMarkdown(trimmed)}
-      </p>
+      </p>,
     );
   }
 
@@ -246,6 +253,90 @@ const GeminiSparkle = ({ className }: { className?: string }) => (
   </svg>
 );
 
+// =============================================================================
+// LOCAL STORAGE CACHE UTILITIES
+// =============================================================================
+
+const CACHE_PREFIX = "emetix_multiagent_";
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour cache duration
+
+interface CachedAnalysis {
+  data: MultiAgentAnalysisResponse;
+  timestamp: number;
+  deepAnalysis: boolean;
+}
+
+function getCacheKey(ticker: string, deepAnalysis: boolean): string {
+  return `${CACHE_PREFIX}${ticker.toUpperCase()}_deep=${deepAnalysis}`;
+}
+
+function getCachedAnalysis(
+  ticker: string,
+  deepAnalysis: boolean,
+): MultiAgentAnalysisResponse | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const key = getCacheKey(ticker, deepAnalysis);
+    const cached = localStorage.getItem(key);
+    if (!cached) return null;
+
+    const parsed: CachedAnalysis = JSON.parse(cached);
+    const age = Date.now() - parsed.timestamp;
+
+    // Check if cache is still valid
+    if (age > CACHE_DURATION_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+
+    return parsed.data;
+  } catch (e) {
+    console.warn("Failed to read cache:", e);
+    return null;
+  }
+}
+
+function setCachedAnalysis(
+  ticker: string,
+  deepAnalysis: boolean,
+  data: MultiAgentAnalysisResponse,
+): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    const key = getCacheKey(ticker, deepAnalysis);
+    const cacheEntry: CachedAnalysis = {
+      data,
+      timestamp: Date.now(),
+      deepAnalysis,
+    };
+    localStorage.setItem(key, JSON.stringify(cacheEntry));
+  } catch (e) {
+    console.warn("Failed to write cache:", e);
+  }
+}
+
+function clearAnalysisCache(ticker?: string): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    if (ticker) {
+      // Clear specific ticker cache
+      localStorage.removeItem(getCacheKey(ticker, false));
+      localStorage.removeItem(getCacheKey(ticker, true));
+    } else {
+      // Clear all multi-agent cache
+      const keys = Object.keys(localStorage).filter((k) =>
+        k.startsWith(CACHE_PREFIX),
+      );
+      keys.forEach((k) => localStorage.removeItem(k));
+    }
+  } catch (e) {
+    console.warn("Failed to clear cache:", e);
+  }
+}
+
 export function MultiAgentAnalysisPanel({
   ticker,
   className,
@@ -254,21 +345,44 @@ export function MultiAgentAnalysisPanel({
     "synthesis" | "sentiment" | "fundamentals" | "ml"
   >("synthesis");
   const [deepAnalysis, setDeepAnalysis] = useState(false);
+  const [cachedData, setCachedData] =
+    useState<MultiAgentAnalysisResponse | null>(null);
 
-  // Multi-agent analysis query
-  const { data, isLoading, isFetching, refetch } =
-    useQuery<MultiAgentAnalysisResponse>({
-      queryKey: ["multiagent-analysis", ticker, deepAnalysis],
-      queryFn: () =>
-        fetchMultiAgentAnalysis(ticker, {
-          includeSentiment: true,
-          includeFundamentals: true,
-          includeMLValuation: true,
-          deepAnalysis: deepAnalysis,
-        }),
-      enabled: false, // Only fetch when user requests
-      staleTime: 30 * 60 * 1000, // 30 minutes
-    });
+  // Load cached data on mount and when ticker/deepAnalysis changes
+  React.useEffect(() => {
+    const cached = getCachedAnalysis(ticker, deepAnalysis);
+    if (cached) {
+      setCachedData(cached);
+    }
+  }, [ticker, deepAnalysis]);
+
+  // Multi-agent analysis query - always use deepSynthesis for this panel
+  const {
+    data: fetchedData,
+    isLoading,
+    isFetching,
+    refetch,
+  } = useQuery<MultiAgentAnalysisResponse>({
+    queryKey: ["multiagent-analysis", ticker, deepAnalysis],
+    queryFn: async () => {
+      const result = await fetchMultiAgentAnalysis(ticker, {
+        includeSentiment: true,
+        includeFundamentals: true,
+        includeMLValuation: true,
+        deepAnalysis: deepAnalysis,
+        deepSynthesis: true, // Always use comprehensive diagnostic for Deep Analysis tab
+      });
+      // Cache the result
+      setCachedAnalysis(ticker, deepAnalysis, result);
+      setCachedData(result);
+      return result;
+    },
+    enabled: false, // Only fetch when user requests
+    staleTime: 30 * 60 * 1000, // 30 minutes
+  });
+
+  // Use cached data if available, otherwise use fetched data
+  const data = fetchedData || cachedData;
 
   const handleStartAnalysis = () => {
     refetch();
@@ -277,6 +391,11 @@ export function MultiAgentAnalysisPanel({
   const handleDeepAnalysis = () => {
     setDeepAnalysis(true);
     refetch();
+  };
+
+  const handleClearCache = () => {
+    clearAnalysisCache(ticker);
+    setCachedData(null);
   };
 
   // Show CTA if no data yet
@@ -360,6 +479,8 @@ export function MultiAgentAnalysisPanel({
   }
 
   // Render results
+  const isCached = !fetchedData && cachedData !== null;
+
   return (
     <Card className={className}>
       <CardHeader>
@@ -371,6 +492,15 @@ export function MultiAgentAnalysisPanel({
               <Badge variant="secondary" className="ml-2">
                 {data?.agents_used?.length || 0} Agents
               </Badge>
+              {isCached && (
+                <Badge
+                  variant="outline"
+                  className="ml-1 gap-1 text-amber-600 border-amber-300 dark:text-amber-400 dark:border-amber-700"
+                >
+                  <Clock className="h-3 w-3" />
+                  Cached
+                </Badge>
+              )}
             </CardTitle>
             <CardDescription className="flex items-center gap-2 mt-1">
               <span>Deep AI insights for {ticker}</span>
@@ -381,20 +511,39 @@ export function MultiAgentAnalysisPanel({
               )}
             </CardDescription>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleDeepAnalysis}
-            disabled={isFetching}
-            className="gap-1"
-          >
-            {isFetching ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Brain className="h-3 w-3" />
+          <div className="flex gap-2">
+            {isCached && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleStartAnalysis}
+                disabled={isFetching}
+                className="gap-1 text-muted-foreground hover:text-foreground"
+                title="Refresh analysis"
+              >
+                {isFetching ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+                Refresh
+              </Button>
             )}
-            Deep Analysis
-          </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDeepAnalysis}
+              disabled={isFetching}
+              className="gap-1"
+            >
+              {isFetching ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Brain className="h-3 w-3" />
+              )}
+              Deep Analysis
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -471,23 +620,109 @@ function SynthesisSection({ data }: { data?: MultiAgentSynthesis }) {
   }
 
   const synthesisText = extractTextContent(data.synthesis);
+  const scores = data.scores_summary;
 
   return (
     <div className="space-y-4">
-      <div className="p-4 rounded-lg bg-gradient-to-r from-amber-50 to-yellow-50 dark:from-amber-950/30 dark:to-yellow-950/30 border border-amber-200 dark:border-amber-800">
+      {/* Contrarian Signal Alert */}
+      {data.contrarian_signal && (
+        <div className="p-3 rounded-lg bg-gradient-to-r from-purple-100 to-pink-100 dark:from-purple-950/40 dark:to-pink-950/40 border border-purple-300 dark:border-purple-700">
+          <div className="flex items-center gap-2">
+            <Zap className="h-5 w-5 text-purple-600" />
+            <span className="font-semibold text-purple-800 dark:text-purple-200">
+              Contrarian Signal Detected
+            </span>
+          </div>
+          <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">
+            Market sentiment is bearish but fundamentals are strong. This could
+            indicate an accumulation opportunity.
+          </p>
+        </div>
+      )}
+
+      {/* Scores Summary Cards */}
+      {scores && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="p-2 rounded-lg bg-muted/50 text-center">
+            <div className="text-xs text-muted-foreground">Sentiment</div>
+            <div
+              className={cn(
+                "text-lg font-bold",
+                scores.sentiment >= 0.6
+                  ? "text-green-600"
+                  : scores.sentiment <= 0.4
+                    ? "text-red-600"
+                    : "text-amber-600",
+              )}
+            >
+              {(scores.sentiment * 100).toFixed(0)}%
+            </div>
+          </div>
+          <div className="p-2 rounded-lg bg-muted/50 text-center">
+            <div className="text-xs text-muted-foreground">Quality</div>
+            <div
+              className={cn(
+                "text-lg font-bold",
+                scores.quality >= 0.6
+                  ? "text-green-600"
+                  : scores.quality <= 0.4
+                    ? "text-red-600"
+                    : "text-amber-600",
+              )}
+            >
+              {(scores.quality * 100).toFixed(0)}%
+            </div>
+          </div>
+          {scores.fair_value && (
+            <div className="p-2 rounded-lg bg-muted/50 text-center">
+              <div className="text-xs text-muted-foreground">Fair Value</div>
+              <div className="text-lg font-bold text-blue-600">
+                ${scores.fair_value.toFixed(2)}
+              </div>
+            </div>
+          )}
+          {scores.margin_of_safety && (
+            <div className="p-2 rounded-lg bg-muted/50 text-center">
+              <div className="text-xs text-muted-foreground">
+                Margin of Safety
+              </div>
+              <div
+                className={cn(
+                  "text-lg font-bold",
+                  scores.margin_of_safety >= 20
+                    ? "text-green-600"
+                    : scores.margin_of_safety >= 0
+                      ? "text-amber-600"
+                      : "text-red-600",
+                )}
+              >
+                {scores.margin_of_safety.toFixed(1)}%
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Main Synthesis Content */}
+      <div className="p-5 rounded-lg bg-gradient-to-r from-amber-50 to-yellow-50 dark:from-slate-800 dark:to-slate-800 border border-amber-200 dark:border-amber-700/50">
         <div className="flex items-start gap-3">
-          <Zap className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
-          <div className="text-amber-800 dark:text-amber-200">
-            <h4 className="font-medium text-amber-900 dark:text-amber-100 mb-2">
-              Combined Agent Insights
+          <Zap className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+          <div className="flex-1">
+            <h4 className="font-semibold text-base text-amber-900 dark:text-amber-100 mb-3">
+              {data.deep_mode
+                ? "Comprehensive Diagnostic"
+                : "Combined Agent Insights"}
             </h4>
-            <MarkdownContent content={synthesisText} />
+            <div className="text-slate-800 dark:text-slate-200">
+              <MarkdownContent content={synthesisText} />
+            </div>
           </div>
         </div>
       </div>
       {data.agents_combined && data.agents_combined.length > 0 && (
         <p className="text-xs text-muted-foreground text-center">
           Synthesized from: {data.agents_combined.join(", ")}
+          {data.deep_mode && " (Deep Analysis Mode)"}
         </p>
       )}
     </div>
@@ -539,7 +774,7 @@ function SentimentSection({ data }: { data?: MultiAgentSentiment }) {
             variant="outline"
             className={cn(
               "font-medium",
-              getSentimentColor(data.sentiment_label)
+              getSentimentColor(data.sentiment_label),
             )}
           >
             {data.sentiment_label || "Unknown"}
@@ -553,12 +788,12 @@ function SentimentSection({ data }: { data?: MultiAgentSentiment }) {
       </div>
 
       {/* Analysis Content */}
-      <div className="p-4 rounded-lg border bg-card max-h-96 overflow-y-auto">
-        <h4 className="font-medium mb-3 flex items-center gap-2">
-          <Newspaper className="h-4 w-4 text-blue-600" />
+      <div className="p-5 rounded-lg border border-slate-200 dark:border-slate-700 bg-card max-h-96 overflow-y-auto">
+        <h4 className="font-semibold text-base text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+          <Newspaper className="h-4 w-4 text-blue-600 dark:text-blue-400" />
           Sentiment Analysis
         </h4>
-        <div className="text-muted-foreground">
+        <div className="text-slate-700 dark:text-slate-300">
           <MarkdownContent content={analysisText} />
         </div>
       </div>
@@ -595,7 +830,7 @@ function FundamentalsSection({ data }: { data?: MultiAgentFundamentals }) {
           <div
             className={cn(
               "text-2xl font-bold",
-              getScoreColor(data.quality_score)
+              getScoreColor(data.quality_score),
             )}
           >
             {data.quality_score ? (data.quality_score * 100).toFixed(0) : "N/A"}
@@ -606,7 +841,7 @@ function FundamentalsSection({ data }: { data?: MultiAgentFundamentals }) {
           <div
             className={cn(
               "text-2xl font-bold",
-              getScoreColor(data.growth_score)
+              getScoreColor(data.growth_score),
             )}
           >
             {data.growth_score ? (data.growth_score * 100).toFixed(0) : "N/A"}
@@ -617,7 +852,7 @@ function FundamentalsSection({ data }: { data?: MultiAgentFundamentals }) {
           <div
             className={cn(
               "text-2xl font-bold",
-              getScoreColor(data.value_score)
+              getScoreColor(data.value_score),
             )}
           >
             {data.value_score ? (data.value_score * 100).toFixed(0) : "N/A"}
@@ -627,12 +862,12 @@ function FundamentalsSection({ data }: { data?: MultiAgentFundamentals }) {
       </div>
 
       {/* Analysis Content */}
-      <div className="p-4 rounded-lg border bg-card max-h-96 overflow-y-auto">
-        <h4 className="font-medium mb-3 flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-purple-600" />
+      <div className="p-5 rounded-lg border border-slate-200 dark:border-slate-700 bg-card max-h-96 overflow-y-auto">
+        <h4 className="font-semibold text-base text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+          <BarChart3 className="h-4 w-4 text-purple-600 dark:text-purple-400" />
           Fundamental Analysis
         </h4>
-        <div className="text-muted-foreground">
+        <div className="text-slate-700 dark:text-slate-300">
           <MarkdownContent content={analysisText} />
         </div>
       </div>
@@ -697,17 +932,17 @@ function MLValuationSection({ data }: { data?: MultiAgentMLValuation }) {
       )}
 
       {/* Analysis Content */}
-      <div className="p-4 rounded-lg border bg-card max-h-96 overflow-y-auto">
-        <h4 className="font-medium mb-3 flex items-center gap-2">
-          <LineChart className="h-4 w-4 text-emerald-600" />
+      <div className="p-5 rounded-lg border border-slate-200 dark:border-slate-700 bg-card max-h-96 overflow-y-auto">
+        <h4 className="font-semibold text-base text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+          <LineChart className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
           LSTM-DCF Valuation Analysis
         </h4>
         {analysisText ? (
-          <div className="text-muted-foreground">
+          <div className="text-slate-700 dark:text-slate-300">
             <MarkdownContent content={analysisText} />
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground italic">
+          <p className="text-sm text-slate-500 dark:text-slate-400 italic">
             ML valuation analysis is still processing or not available for this
             stock. The LSTM-DCF model requires sufficient historical data to
             generate predictions.

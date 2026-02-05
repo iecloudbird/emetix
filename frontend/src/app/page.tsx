@@ -78,7 +78,7 @@ function calculateSuitability(
   const conviction = stock.conviction;
   const classification = stock.classification;
   const mos = stock.margin_of_safety ?? 0;
-  const subCategory = stock.sub_category || "";
+  const subCategory = stock.watch_sub_category || "";
 
   // Conservative profiles - need high conviction + good MoS + high score
   if (profile.profileType === "conservative") {
@@ -388,7 +388,9 @@ export default function TopPicksPage() {
               onClick={() => setShowRiskModal(true)}
             >
               <Shield className="h-3.5 w-3.5" />
-              {riskProfile.profileType.replace("_", " ")} Profile
+              {riskProfile.profileType.charAt(0).toUpperCase() +
+                riskProfile.profileType.slice(1).replace("_", " ")}{" "}
+              Profile
             </Badge>
           ) : (
             <Button
@@ -404,15 +406,13 @@ export default function TopPicksPage() {
 
           <Badge variant="outline" className="w-fit">
             <Clock className="mr-1 h-3 w-3" />
-            {curatedData && "generated_at" in curatedData
-              ? new Date(
-                  curatedData.generated_at as string,
-                ).toLocaleDateString()
+            {curatedData?.metadata?.generated_at
+              ? new Date(curatedData.metadata.generated_at as string).toLocaleDateString()
               : summary?.pipeline?.last_scan?.completed_at
-                ? new Date(
-                    summary.pipeline.last_scan.completed_at,
-                  ).toLocaleDateString()
-                : "Loading..."}
+                ? new Date(summary.pipeline.last_scan.completed_at).toLocaleDateString()
+                : isLoading
+                  ? "Loading..."
+                  : new Date().toLocaleDateString()}
           </Badge>
         </div>
       </div>
@@ -690,11 +690,16 @@ export default function TopPicksPage() {
         <Link href="/screener">
           <Button variant="outline" className="gap-2">
             <Filter className="h-4 w-4" />
-            View All {summary?.pipeline?.qualified_total || "500+"} Stocks in
-            Screener
+            View All Qualified Stocks in Screener
             <ArrowRight className="h-4 w-4" />
           </Button>
         </Link>
+      </div>
+
+      {/* Footer */}
+      <div className="text-center text-sm text-muted-foreground pt-8 mt-8 border-t">
+        <p>© 2026 Emetix - A00303759 Final Year Project</p>
+        <p className="mt-1">Built with care for retail investors</p>
       </div>
     </div>
   );

@@ -222,6 +222,12 @@ export default function RiskAssessmentPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Footer */}
+          <div className="text-center text-sm text-muted-foreground pt-8 mt-8 border-t">
+            <p>© 2026 Emetix - A00303759 Final Year Project</p>
+            <p className="mt-1">Built with care for retail investors</p>
+          </div>
         </div>
       </>
     );
@@ -334,6 +340,12 @@ export default function RiskAssessmentPage() {
             and emotional comfort with volatility to recommend stocks that truly
             fit <strong>your</strong> situation—not just any undervalued stock.
           </p>
+        </div>
+
+        {/* Footer */}
+        <div className="text-center text-sm text-muted-foreground pt-8 mt-8 border-t">
+          <p>© 2026 Emetix - A00303759 Final Year Project</p>
+          <p className="mt-1">Built with care for retail investors</p>
         </div>
       </div>
     </div>

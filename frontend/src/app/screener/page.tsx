@@ -489,6 +489,12 @@ export default function ScreenerPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Footer */}
+      <div className="text-center text-sm text-muted-foreground pt-8 mt-8 border-t">
+        <p>© 2026 Emetix - A00303759 Final Year Project</p>
+        <p className="mt-1">Built with care for retail investors</p>
+      </div>
     </div>
   );
 }

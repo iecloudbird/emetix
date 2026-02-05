@@ -31,9 +31,9 @@ export default function AboutPage() {
           Platform
         </p>
         <div className="flex flex-wrap gap-2 justify-center">
-          <Badge variant="secondary">Final Year Project</Badge>
-          <Badge variant="outline">30-Week Development</Badge>
+          <Badge variant="secondary">AI-Driven Valuation</Badge>
           <Badge variant="outline">ML-Powered</Badge>
+          <Badge variant="outline">UnderValued Hunter</Badge>
         </div>
       </div>
 
@@ -125,7 +125,7 @@ export default function AboutPage() {
       {/* Tech Stack */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
+          <CardTitle className="flex items-center gap-2 pb-3">
             <BarChart3 className="h-5 w-5 text-indigo-600" />
             Technology Stack
           </CardTitle>
@@ -191,7 +191,7 @@ export default function AboutPage() {
 
       {/* Footer */}
       <div className="text-center text-sm text-muted-foreground pt-4 border-t">
-        <p>© 2026 Emetix - Final Year Project</p>
+        <p>© 2026 Emetix - A00303759 Final Year Project</p>
         <p className="mt-1">Built with care for retail investors</p>
       </div>
     </div>
