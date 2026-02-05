@@ -26,6 +26,49 @@ logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=3)
 
 
+def _extract_text_from_langchain_content(content: Any) -> str:
+    """
+    Extract plain text from LangChain message content.
+    
+    LangChain can return content in various formats:
+    - str: Plain text
+    - list: List of content blocks like [{"type": "text", "text": "...", "extras": {...}}]
+    - dict: Object with "text" field
+    
+    This function normalizes all formats to plain text.
+    """
+    if content is None:
+        return ""
+    
+    if isinstance(content, str):
+        return content
+    
+    if isinstance(content, list):
+        # Handle list of content blocks
+        text_parts = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict):
+                # Extract text from {type: "text", text: "..."} format
+                if block.get("type") == "text" and "text" in block:
+                    text_parts.append(block["text"])
+                elif "text" in block:
+                    text_parts.append(str(block["text"]))
+                elif "content" in block:
+                    text_parts.append(str(block["content"]))
+        return "\n".join(text_parts) if text_parts else str(content)
+    
+    if isinstance(content, dict):
+        if "text" in content:
+            return str(content["text"])
+        if "content" in content:
+            return _extract_text_from_langchain_content(content["content"])
+        return str(content)
+    
+    return str(content)
+
+
 def get_supervisor_agent():
     """Lazy import SupervisorAgent to avoid circular imports."""
     try:
@@ -82,7 +125,8 @@ async def get_multiagent_analysis(
     include_sentiment: bool = Query(default=True, description="Include sentiment analysis from news"),
     include_fundamentals: bool = Query(default=True, description="Include fundamental analysis"),
     include_ml_valuation: bool = Query(default=True, description="Include LSTM-DCF ML valuation"),
-    deep_analysis: bool = Query(default=False, description="Full orchestrated analysis (slower)")
+    deep_analysis: bool = Query(default=False, description="Full orchestrated analysis (slower)"),
+    deep_synthesis: bool = Query(default=False, description="Generate comprehensive diagnostic reasoning instead of brief summary")
 ):
     """
     Generate comprehensive multi-agent analysis for a stock.
@@ -93,6 +137,7 @@ async def get_multiagent_analysis(
     - ML Valuation: LSTM-DCF fair value estimation
     
     Set deep_analysis=true for full SupervisorAgent orchestration (slowest but most comprehensive).
+    Set deep_synthesis=true for detailed diagnostic reasoning (5-7 paragraphs) vs brief 3-4 sentence summary.
     """
     ticker = ticker.upper()
     
@@ -156,7 +201,7 @@ async def get_multiagent_analysis(
             
             # Generate synthesis if we have multiple sections
             if len(result["agents_used"]) >= 2:
-                synthesis = await _generate_synthesis(ticker, result["sections"])
+                synthesis = await _generate_synthesis(ticker, result["sections"], deep_mode=deep_synthesis)
                 result["sections"]["synthesis"] = synthesis
         
         return result
@@ -326,12 +371,13 @@ async def _get_sentiment_analysis(ticker: str) -> Dict[str, Any]:
             lambda: agent.analyze_comprehensive_sentiment(ticker)
         )
         
-        # Parse result
+        # Parse result - extract text from LangChain response format
         if isinstance(result, dict):
-            sentiment_analysis = result.get("sentiment_analysis", "")
+            raw_analysis = result.get("sentiment_analysis", "")
+            sentiment_analysis = _extract_text_from_langchain_content(raw_analysis)
             sentiment_score = result.get("sentiment_score", 0.5)
         else:
-            sentiment_analysis = str(result)
+            sentiment_analysis = _extract_text_from_langchain_content(result)
             sentiment_score = 0.5
         
         return {
@@ -363,14 +409,15 @@ async def _get_fundamentals_analysis(ticker: str) -> Dict[str, Any]:
             lambda: agent.analyze_comprehensive_fundamentals(ticker)
         )
         
-        # Parse result
+        # Parse result - extract text from LangChain response format
         if isinstance(result, dict):
-            fundamental_analysis = result.get("fundamental_analysis", "")
+            raw_analysis = result.get("fundamental_analysis", "")
+            fundamental_analysis = _extract_text_from_langchain_content(raw_analysis)
             quality_score = result.get("quality_score", 0.5)
             growth_score = result.get("growth_score", 0.5)
             value_score = result.get("value_score", 0.5)
         else:
-            fundamental_analysis = str(result)
+            fundamental_analysis = _extract_text_from_langchain_content(result)
             quality_score = growth_score = value_score = 0.5
         
         return {
@@ -404,34 +451,44 @@ async def _get_ml_valuation(ticker: str) -> Dict[str, Any]:
             lambda: agent.analyze(query)
         )
         
+        # Extract text from LangChain response format
+        analysis_text = _extract_text_from_langchain_content(result)
+        
         # Parse the result for structured data
         fair_value = None
         consensus_score = None
         margin_of_safety = None
         
-        if isinstance(result, str):
-            # Try to extract numbers from the response
-            import re
-            
-            # Look for fair value
-            fv_match = re.search(r'fair value[:\s]*\$?([\d.]+)', result, re.IGNORECASE)
-            if fv_match:
+        import re
+        
+        # Look for fair value
+        fv_match = re.search(r'fair value[:\s]*\$?([\d.]+)', analysis_text, re.IGNORECASE)
+        if fv_match:
+            try:
                 fair_value = float(fv_match.group(1))
-            
-            # Look for consensus score
-            cs_match = re.search(r'consensus[:\s]*([\d.]+)', result, re.IGNORECASE)
-            if cs_match:
+            except ValueError:
+                pass
+        
+        # Look for consensus score
+        cs_match = re.search(r'consensus[:\s]*([\d.]+)', analysis_text, re.IGNORECASE)
+        if cs_match:
+            try:
                 consensus_score = float(cs_match.group(1))
-            
-            # Look for margin of safety
-            mos_match = re.search(r'margin[:\s]*([\d.]+)%?', result, re.IGNORECASE)
-            if mos_match:
+            except ValueError:
+                pass
+        
+        # Look for margin of safety
+        mos_match = re.search(r'margin[:\s]*([\d.]+)%?', analysis_text, re.IGNORECASE)
+        if mos_match:
+            try:
                 margin_of_safety = float(mos_match.group(1))
+            except ValueError:
+                pass
         
         return {
             "available": True,
             "agent": "EnhancedValuationAgent",
-            "analysis": result if isinstance(result, str) else str(result),
+            "analysis": analysis_text,
             "extracted_metrics": {
                 "fair_value": fair_value,
                 "consensus_score": consensus_score,
@@ -447,31 +504,89 @@ async def _get_ml_valuation(ticker: str) -> Dict[str, Any]:
         }
 
 
-async def _generate_synthesis(ticker: str, sections: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate a synthesis of all agent analyses using LLM."""
+async def _generate_synthesis(ticker: str, sections: Dict[str, Any], deep_mode: bool = False) -> Dict[str, Any]:
+    """Generate a synthesis of all agent analyses using LLM.
+    
+    Args:
+        ticker: Stock ticker symbol
+        sections: Dict of agent analysis sections
+        deep_mode: If True, generate comprehensive diagnostic reasoning
+    """
     try:
         llm = get_llm()
         
         # Build context from sections
         context_parts = []
+        sentiment_score = 0.5
+        quality_score = 0.5
+        fair_value = None
+        margin_of_safety = None
         
         if "sentiment" in sections and sections["sentiment"].get("available"):
             s = sections["sentiment"]
-            context_parts.append(f"SENTIMENT ({s.get('sentiment_label', 'Neutral')}): {s.get('analysis', 'N/A')[:500]}")
+            sentiment_score = s.get("sentiment_score", 0.5)
+            context_parts.append(f"SENTIMENT ({s.get('sentiment_label', 'Neutral')}, Score: {sentiment_score:.2f}): {s.get('analysis', 'N/A')[:800]}")
         
         if "fundamentals" in sections and sections["fundamentals"].get("available"):
             f = sections["fundamentals"]
-            context_parts.append(f"FUNDAMENTALS (Quality={f.get('quality_score', 'N/A')}, Growth={f.get('growth_score', 'N/A')}): {f.get('analysis', 'N/A')[:500]}")
+            quality_score = f.get("quality_score", 0.5)
+            growth_score = f.get("growth_score", 0.5)
+            value_score = f.get("value_score", 0.5)
+            context_parts.append(f"FUNDAMENTALS (Quality={quality_score:.2f}, Growth={growth_score:.2f}, Value={value_score:.2f}): {f.get('analysis', 'N/A')[:800]}")
         
         if "ml_valuation" in sections and sections["ml_valuation"].get("available"):
             m = sections["ml_valuation"]
             metrics = m.get("extracted_metrics", {})
-            context_parts.append(f"ML VALUATION (FV=${metrics.get('fair_value', 'N/A')}, MoS={metrics.get('margin_of_safety', 'N/A')}%): {m.get('analysis', 'N/A')[:500]}")
+            fair_value = metrics.get("fair_value")
+            margin_of_safety = metrics.get("margin_of_safety")
+            context_parts.append(f"ML VALUATION (Fair Value=${fair_value or 'N/A'}, Margin of Safety={margin_of_safety or 'N/A'}%): {m.get('analysis', 'N/A')[:800]}")
         
         if not context_parts:
             return {"available": False, "error": "No agent data to synthesize"}
         
-        prompt = f"""You are synthesizing a multi-agent stock analysis for {ticker}.
+        # Detect contrarian signal
+        is_contrarian = sentiment_score < 0.4 and quality_score > 0.6
+        contrarian_note = ""
+        if is_contrarian:
+            contrarian_note = "\n\n⚠️ CONTRARIAN SIGNAL DETECTED: Market sentiment is bearish but fundamentals are strong. This could indicate an accumulation opportunity if the negative sentiment is overblown."
+        
+        if deep_mode:
+            # Deep diagnostic reasoning for "Deep Analysis" tab
+            prompt = f"""You are a senior equity analyst providing a comprehensive diagnostic for {ticker}.
+
+Here's what our specialized AI agents discovered:
+
+{chr(10).join(context_parts)}
+
+Provide a DETAILED diagnostic analysis (5-7 paragraphs) covering:
+
+## 1. WHAT'S HAPPENING
+- Current market perception (sentiment) vs actual business performance (fundamentals)
+- Is the stock priced correctly relative to our ML fair value estimate?
+
+## 2. WHY IS THIS HAPPENING
+- What's driving the sentiment (positive or negative news)?
+- Are there fundamental reasons justifying current price levels?
+- Any disconnect between market narrative and financial reality?
+
+## 3. KEY RISKS
+- What could go wrong with this investment?
+- What assumptions is the ML model making that might not hold?
+
+## 4. OPPORTUNITY ASSESSMENT
+- If undervalued: What catalyst could unlock value?
+- If overvalued: What might cause a correction?
+- Time horizon considerations (short-term vs long-term view)
+
+## 5. ACTIONABLE RECOMMENDATION
+- Clear BUY/HOLD/AVOID with reasoning
+- Position sizing consideration (high conviction vs speculative)
+- What to watch for (key metrics or events){contrarian_note}
+
+Be specific with numbers where available. Avoid generic statements. Do NOT use emojis."""
+        else:
+            # Quick synthesis for lightweight display
+            prompt = f"""You are synthesizing a multi-agent stock analysis for {ticker}.
 
 Here's what our specialized AI agents found:
 
@@ -480,7 +595,7 @@ Here's what our specialized AI agents found:
 Provide a concise synthesis (3-4 sentences) that:
 1. Highlights the key insight from combining these perspectives
 2. Identifies any conflicts or agreements between agents
-3. Gives a clear actionable takeaway
+3. Gives a clear actionable takeaway{contrarian_note}
 
 Keep it conversational and avoid jargon. Do NOT use emojis."""
         
@@ -490,7 +605,15 @@ Keep it conversational and avoid jargon. Do NOT use emojis."""
         return {
             "available": True,
             "synthesis": content,
-            "agents_combined": list(sections.keys())
+            "agents_combined": list(sections.keys()),
+            "deep_mode": deep_mode,
+            "contrarian_signal": is_contrarian,
+            "scores_summary": {
+                "sentiment": sentiment_score,
+                "quality": quality_score,
+                "fair_value": fair_value,
+                "margin_of_safety": margin_of_safety
+            }
         }
         
     except Exception as e:

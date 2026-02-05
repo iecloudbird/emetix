@@ -49,39 +49,21 @@ class ValuationAnalyzer:
         }
     
     def _load_lstm_model(self):
-        """Load LSTM-DCF growth model for fair value prediction with proper scaler"""
+        """Load LSTM-DCF growth model for fair value prediction using from_checkpoint"""
         try:
-            # Try Enhanced model first (16-input, 2-output for revenue_growth + fcf_growth)
-            enhanced_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
-            if enhanced_path.exists():
-                checkpoint = torch.load(str(enhanced_path), map_location='cpu', weights_only=False)
+            model_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
+            if model_path.exists():
+                # Use from_checkpoint for automatic v1/v2 detection
+                self.lstm_model, metadata = LSTMDCFModel.from_checkpoint(str(model_path))
                 
-                self.lstm_model = LSTMDCFModel(input_size=16, hidden_size=128, num_layers=3, output_size=2)
-                self.lstm_model.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
-                self.lstm_model.eval()
+                # Extract metadata - handle both v1 and v2 scaler formats
+                self.lstm_scaler = metadata.get('feature_scaler') or metadata.get('scaler')
+                self.lstm_target_scaler = metadata.get('target_scaler')
+                self.lstm_feature_cols = metadata.get('feature_cols', [])
+                self.lstm_sequence_length = metadata.get('sequence_length', 8)
+                self.lstm_model_version = metadata.get('model_version', 'v1')
                 
-                # Load saved scaler and metadata
-                self.lstm_scaler = checkpoint.get('scaler', None)
-                self.lstm_feature_cols = checkpoint.get('feature_cols', None)
-                self.lstm_sequence_length = checkpoint.get('sequence_length', 60)
-                
-                self.logger.info("✅ LSTM-DCF Enhanced model loaded with scaler (16-input, 2-output)")
-                return
-            
-            # Fallback to Final model (12-input, 1-output)
-            final_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
-            if final_path.exists():
-                checkpoint = torch.load(str(final_path), map_location='cpu', weights_only=False)
-                self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3, output_size=1)
-                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                    self.lstm_model.load_state_dict(checkpoint['model_state_dict'])
-                    self.lstm_scaler = checkpoint.get('scaler', None)
-                else:
-                    self.lstm_model.load_state_dict(checkpoint)
-                    self.lstm_scaler = None
-                self.lstm_model.eval()
-                self.lstm_sequence_length = 60
-                self.logger.info("✅ LSTM-DCF Final model loaded (12-input, 1-output)")
+                self.logger.info(f"✅ LSTM-DCF {self.lstm_model_version} model loaded (seq_len={self.lstm_sequence_length})")
                 return
             
             self.logger.warning("⚠️ No LSTM-DCF model found, will use traditional DCF only")

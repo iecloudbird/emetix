@@ -11,6 +11,7 @@ from langchain_core.tools import Tool
 import os
 import torch
 import pandas as pd
+import numpy as np
 
 from config.settings import MODELS_DIR
 from config.logging_config import get_logger
@@ -18,6 +19,7 @@ from src.analysis import ValuationAnalyzer, GrowthScreener
 from src.models.deep_learning.lstm_dcf import LSTMDCFModel
 from src.models.ensemble.consensus_scorer import ConsensusScorer
 from src.data.processors.time_series_processor import TimeSeriesProcessor
+from src.data.processors.lstm_v2_processor import LSTMV2Processor, create_v2_processor
 from src.data.fetchers import YFinanceFetcher
 from src.utils.llm_provider import get_llm
 import yfinance as yf
@@ -40,33 +42,51 @@ class EnhancedValuationAgent:
         self.llm = get_llm(model_tier="default", temperature=0)
         self.valuation_analyzer = ValuationAnalyzer()
         self.growth_screener = GrowthScreener()
-        self.time_series_processor = TimeSeriesProcessor()
         self.fetcher = YFinanceFetcher()
         self.consensus_scorer = ConsensusScorer()
         
-        # Load ML models
+        # Load ML models first (before creating processors)
         self._load_ml_models()
+        
+        # Initialize appropriate processor based on model version
+        if getattr(self, 'lstm_model_version', 'v1') == 'v2':
+            # v2 uses quarterly fundamentals, not daily prices
+            self.v2_processor = create_v2_processor(self.lstm_metadata)
+            self.time_series_processor = None  # Not used for v2
+            self.logger.info(f"✓ Using V2 processor (quarterly fundamentals)")
+        else:
+            # v1 uses daily price data
+            model_seq_length = getattr(self, 'lstm_sequence_length', 60)
+            self.time_series_processor = TimeSeriesProcessor(sequence_length=model_seq_length)
+            self.v2_processor = None
+            self.logger.info(f"✓ Using V1 processor (daily prices, seq_len={model_seq_length})")
         
         # Setup tools
         self.tools = self._setup_tools()
         self.agent_executor = self._create_agent()
     
     def _load_ml_models(self):
-        """Load trained LSTM-DCF model"""
-        # Load LSTM-DCF
+        """Load trained LSTM-DCF model using from_checkpoint for v1/v2 support"""
         lstm_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
         if lstm_path.exists():
             try:
-                self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3)
-                self.lstm_model.load_model(str(lstm_path))
-                self.lstm_model.eval()
-                self.logger.info("✓ LSTM-DCF model loaded successfully")
+                # Use from_checkpoint for automatic version detection
+                self.lstm_model, self.lstm_metadata = LSTMDCFModel.from_checkpoint(str(lstm_path))
+                self.lstm_model_version = self.lstm_metadata.get('model_version', 'v1')
+                self.lstm_sequence_length = self.lstm_metadata.get('sequence_length', 8)
+                self.lstm_feature_scaler = self.lstm_metadata.get('feature_scaler') or self.lstm_metadata.get('scaler')
+                self.lstm_target_scaler = self.lstm_metadata.get('target_scaler')
+                self.logger.info(f"✓ LSTM-DCF {self.lstm_model_version} model loaded (seq_len={self.lstm_sequence_length})")
             except Exception as e:
                 self.logger.warning(f"Could not load LSTM-DCF model: {e}")
                 self.lstm_model = None
+                self.lstm_metadata = None
+                self.lstm_model_version = None
         else:
             self.logger.warning(f"LSTM-DCF model not found: {lstm_path}")
             self.lstm_model = None
+            self.lstm_metadata = None
+            self.lstm_model_version = None
     
     def _setup_tools(self) -> list:
         """Setup tools including traditional and ML-powered valuation"""
@@ -107,65 +127,125 @@ Component Scores: {result['component_scores']}
                 return "Error: LSTM-DCF model not loaded. Please train the model first."
             
             try:
-                # Fetch time-series data
-                self.logger.info(f"Fetching time-series data for {ticker}...")
-                ts_data = self.time_series_processor.fetch_sequential_data(ticker, period='5y')
-                
-                if ts_data is None or ts_data.empty:
-                    return f"Error: Could not fetch time-series data for {ticker}"
-                
-                # Create sequences
-                X, _ = self.time_series_processor.create_sequences(ts_data, target_col='close')
-                if len(X) == 0:
-                    return f"Error: Insufficient historical data for {ticker} (need at least 60 periods)"
-                
-                # Get last sequence for prediction
-                last_seq = torch.tensor(X[-1:], dtype=torch.float32)
-                
-                # Get stock info for shares outstanding
+                # Get stock info
                 stock = yf.Ticker(ticker)
                 info = stock.info
                 current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                shares = info.get('sharesOutstanding', 1e9)
                 
-                # Forecast FCFF (per-share mode - no shares scaling)
-                fcff_forecasts = self.lstm_model.forecast_fcff(
-                    last_seq, 
-                    periods=10, 
-                    scaler=self.time_series_processor.scaler,
-                    fcff_feature_idx=-1,
-                    use_per_share=True  # Keep as per-share FCFF
-                )
+                # Handle v2 model (quarterly fundamentals)
+                if self.lstm_model_version == 'v2' and self.v2_processor is not None:
+                    self.logger.info(f"Using LSTM-DCF v2 for {ticker}...")
+                    
+                    # Prepare v2 inference sequence
+                    result = self.v2_processor.prepare_inference_sequence(
+                        ticker, 
+                        feature_scaler=self.lstm_feature_scaler
+                    )
+                    
+                    if result is None:
+                        return f"Error: Could not fetch quarterly data for {ticker}. Need {self.lstm_sequence_length} quarters of financial data."
+                    
+                    input_tensor, metadata = result
+                    
+                    # Run model prediction
+                    self.lstm_model.eval()
+                    with torch.no_grad():
+                        prediction = self.lstm_model(input_tensor)
+                    
+                    # Interpret prediction
+                    interpretation = self.v2_processor.interpret_prediction(
+                        prediction,
+                        target_scaler=self.lstm_target_scaler,
+                        current_price=current_price
+                    )
+                    
+                    revenue_growth = interpretation['revenue_growth_forecast']
+                    fcf_growth = interpretation['fcf_growth_forecast']
+                    upside = interpretation['upside_percent']
+                    fair_value = interpretation['implied_fair_value']
+                    
+                    # Determine recommendation
+                    if upside > 15:
+                        assessment = "UNDERVALUED"
+                        recommendation = "BUY"
+                    elif upside > -10:
+                        assessment = "FAIRLY VALUED"
+                        recommendation = "HOLD"
+                    else:
+                        assessment = "OVERVALUED"
+                        recommendation = "SELL"
+                    
+                    return f"""
+LSTM-DCF v2 Valuation for {ticker}:
+
+Current Price: ${current_price:.2f}
+Implied Fair Value: ${fair_value:.2f}
+Valuation Gap: {upside:+.2f}%
+Assessment: {assessment}
+
+Growth Forecasts (Next Year):
+- Revenue Growth: {revenue_growth:+.1f}%
+- FCF Growth: {fcf_growth:+.1f}%
+
+Model Details:
+- Quarters Analyzed: {metadata['quarters_used']}
+- Latest Quarter: {metadata['latest_quarter']}
+- Model Version: v2 (fundamentals-based)
+
+Recommendation: {recommendation}
+Confidence: {"High" if abs(upside) > 20 else "Medium"}
+Note: Predictions based on quarterly financial trends
+"""
                 
-                # Calculate DCF valuation (with calibration)
-                dcf_result = self.lstm_model.dcf_valuation(fcff_forecasts, 1.0, current_price)
-                fair_value = dcf_result.get('calibrated_fair_value', dcf_result['fair_value'])
-                
-                # Calculate valuation gap
-                gap = ((fair_value - current_price) / current_price) * 100 if current_price > 0 else 0
-                is_undervalued = gap > 10  # More than 10% undervalued
-                
-                # Format output
-                return f"""
-LSTM-DCF Hybrid Valuation for {ticker}:
+                # Handle v1 model (daily prices) - fallback
+                else:
+                    self.logger.info(f"Using LSTM-DCF v1 for {ticker}...")
+                    
+                    if self.time_series_processor is None:
+                        return "Error: V1 processor not initialized for v1 model"
+                    
+                    ts_data = self.time_series_processor.fetch_sequential_data(ticker, period='5y')
+                    
+                    if ts_data is None or ts_data.empty:
+                        return f"Error: Could not fetch time-series data for {ticker}"
+                    
+                    X, _ = self.time_series_processor.create_sequences(ts_data, target_col='close')
+                    if len(X) == 0:
+                        return f"Error: Insufficient historical data for {ticker}"
+                    
+                    last_seq = torch.tensor(X[-1:], dtype=torch.float32)
+                    shares = info.get('sharesOutstanding', 1e9)
+                    
+                    fcff_forecasts = self.lstm_model.forecast_fcff(
+                        last_seq, 
+                        periods=10, 
+                        scaler=self.time_series_processor.scaler,
+                        fcff_feature_idx=-1,
+                        use_per_share=True
+                    )
+                    
+                    dcf_result = self.lstm_model.dcf_valuation(fcff_forecasts, 1.0, current_price)
+                    fair_value = dcf_result.get('calibrated_fair_value', dcf_result['fair_value'])
+                    gap = ((fair_value - current_price) / current_price) * 100 if current_price > 0 else 0
+                    is_undervalued = gap > 10
+                    
+                    return f"""
+LSTM-DCF v1 Valuation for {ticker}:
 
 Current Price: ${current_price:.2f}
 Fair Value (DCF): ${fair_value:.2f}
-{'Raw Model Output: $' + f'{dcf_result["fair_value"]:.2f}' if abs(dcf_result["fair_value"] - fair_value) > 1 else ''}
 Valuation Gap: {gap:+.2f}%
 Assessment: {"UNDERVALUED" if is_undervalued else "FAIRLY VALUED" if abs(gap) < 10 else "OVERVALUED"}
 
 DCF Components:
 - Present Value of FCFF: ${dcf_result['pv_fcff']:.2f}
 - Terminal Value (PV): ${dcf_result['pv_terminal_value']:.2f}
-- Total Value: ${dcf_result['enterprise_value']:.2f}
 
-10-Year FCFF Forecast (LSTM, per-share):
+10-Year FCFF Forecast:
 {' → '.join([f"${f:.2f}" for f in fcff_forecasts[:5]])}...
 
 Recommendation: {"BUY" if gap > 15 else "HOLD" if gap > -10 else "SELL"}
-Confidence: {"High" if abs(gap) > 20 else "Medium"}
-Note: Model trained on proxy FCFF, use as relative indicator only
+Note: Model trained on proxy FCFF (v1)
 """
             except Exception as e:
                 self.logger.error(f"LSTM-DCF valuation error: {e}", exc_info=True)
@@ -178,46 +258,71 @@ Note: Model trained on proxy FCFF, use as relative indicator only
                 trad_result = self.valuation_analyzer.analyze_stock(ticker)
                 trad_score = trad_result.get('valuation_score', 50) / 100 if 'error' not in trad_result else 0.5
                 
-                # Get LSTM-DCF score (normalized valuation gap)
+                # Get LSTM-DCF score
                 lstm_score = 0.5
                 if self.lstm_model:
                     try:
-                        ts_data = self.time_series_processor.fetch_sequential_data(ticker, period='5y')
-                        if ts_data is not None and not ts_data.empty:
-                            X, _ = self.time_series_processor.create_sequences(ts_data, target_col='close')
-                            if len(X) > 0:
-                                # Get stock info
-                                stock = yf.Ticker(ticker)
-                                info = stock.info
-                                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                        stock = yf.Ticker(ticker)
+                        info = stock.info
+                        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                        
+                        if self.lstm_model_version == 'v2' and self.v2_processor is not None:
+                            # v2: Use quarterly fundamentals
+                            result = self.v2_processor.prepare_inference_sequence(
+                                ticker, feature_scaler=self.lstm_feature_scaler
+                            )
+                            if result is not None:
+                                input_tensor, _ = result
+                                self.lstm_model.eval()
+                                with torch.no_grad():
+                                    prediction = self.lstm_model(input_tensor)
                                 
-                                last_seq = torch.tensor(X[-1:], dtype=torch.float32)
-                                fcff_forecasts = self.lstm_model.forecast_fcff(
-                                    last_seq, 
-                                    periods=10,
-                                    scaler=self.time_series_processor.scaler,
-                                    fcff_feature_idx=-1,
-                                    use_per_share=True  # Per-share mode
+                                interpretation = self.v2_processor.interpret_prediction(
+                                    prediction,
+                                    target_scaler=self.lstm_target_scaler,
+                                    current_price=current_price
                                 )
                                 
-                                # USE RELATIVE SCORING: Compare FCFF growth trend vs current price
-                                # If FCFF is growing strongly, score higher
-                                avg_fcff = sum(fcff_forecasts) / len(fcff_forecasts)
-                                fcff_growth = (fcff_forecasts[-1] - fcff_forecasts[0]) / fcff_forecasts[0] if fcff_forecasts[0] > 0 else 0
-                                
-                                # Normalize: Strong growth (>50%) = 1.0, negative growth (<-10%) = 0.0
-                                if fcff_growth > 0.5:
-                                    lstm_score = 1.0
-                                elif fcff_growth > 0.2:
-                                    lstm_score = 0.65 + (fcff_growth - 0.2) * 1.17  # 0.2-0.5 → 0.65-1.0
-                                elif fcff_growth > 0:
-                                    lstm_score = 0.5 + (fcff_growth / 0.2) * 0.15  # 0-0.2 → 0.5-0.65
-                                elif fcff_growth > -0.1:
-                                    lstm_score = 0.5 + (fcff_growth / 0.1) * 0.2  # -0.1-0 → 0.3-0.5
+                                # Convert growth forecasts to score (0-1)
+                                avg_growth = (interpretation['revenue_growth_forecast'] + 
+                                            interpretation['fcf_growth_forecast']) / 2
+                                # Strong positive growth = high score
+                                if avg_growth > 30:
+                                    lstm_score = 0.85
+                                elif avg_growth > 15:
+                                    lstm_score = 0.7
+                                elif avg_growth > 0:
+                                    lstm_score = 0.5 + (avg_growth / 30) * 0.2
+                                elif avg_growth > -15:
+                                    lstm_score = 0.35 + (avg_growth + 15) / 30 * 0.15
                                 else:
                                     lstm_score = 0.3
-                    except:
-                        pass
+                        else:
+                            # v1: Use daily price data
+                            if self.time_series_processor is not None:
+                                ts_data = self.time_series_processor.fetch_sequential_data(ticker, period='5y')
+                                if ts_data is not None and not ts_data.empty:
+                                    X, _ = self.time_series_processor.create_sequences(ts_data, target_col='close')
+                                    if len(X) > 0:
+                                        last_seq = torch.tensor(X[-1:], dtype=torch.float32)
+                                        fcff_forecasts = self.lstm_model.forecast_fcff(
+                                            last_seq, periods=10,
+                                            scaler=self.time_series_processor.scaler,
+                                            fcff_feature_idx=-1, use_per_share=True
+                                        )
+                                        fcff_growth = (fcff_forecasts[-1] - fcff_forecasts[0]) / fcff_forecasts[0] if fcff_forecasts[0] > 0 else 0
+                                        if fcff_growth > 0.5:
+                                            lstm_score = 1.0
+                                        elif fcff_growth > 0.2:
+                                            lstm_score = 0.65 + (fcff_growth - 0.2) * 1.17
+                                        elif fcff_growth > 0:
+                                            lstm_score = 0.5 + (fcff_growth / 0.2) * 0.15
+                                        elif fcff_growth > -0.1:
+                                            lstm_score = 0.5 + (fcff_growth / 0.1) * 0.2
+                                        else:
+                                            lstm_score = 0.3
+                    except Exception as e:
+                        self.logger.warning(f"LSTM scoring failed: {e}")
                 
                 # Calculate consensus (LSTM-DCF + Traditional)
                 # Weights: LSTM-DCF 50%, Traditional 40%, Risk placeholder 10%

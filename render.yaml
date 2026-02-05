@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: emetix-backend
+    runtime: python
+    pythonVersion: 3.10
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.10"
+      - key: PORT
+        value: "8000"
+      - key: ENVIRONMENT
+        value: production
+      # Add your API keys here (from environment variables)
+      - key: GEMINI_API_KEY
+        sync: false  # Set in Render dashboard instead
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FINNHUB_API_KEY
+        sync: false
+    staticPublishPath: ./docs
+    headers:
+      - path: /api/*
+        name: "Access-Control-Allow-Origin"
+        value: "https://emetix-woad.vercel.app"
+      - path: /api/*
+        name: "Access-Control-Allow-Methods"
+        value: "GET, POST, OPTIONS"
+      - path: /api/*
+        name: "Access-Control-Allow-Headers"
+        value: "Content-Type, Authorization"

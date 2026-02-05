@@ -38,17 +38,22 @@ class WatchlistManagerAgent:
         # Load ML models
         self.ml_models_available = False
         try:
-            # Load LSTM-DCF model
-            self.lstm_model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=3)
-            lstm_path = str(MODELS_DIR / "lstm_dcf_enhanced.pth")
-            self.lstm_model.load_model(lstm_path)
-            self.lstm_model.eval()
+            # Load LSTM-DCF model using from_checkpoint for v1/v2 support
+            lstm_path = MODELS_DIR / "lstm_dcf_enhanced.pth"
+            if lstm_path.exists():
+                self.lstm_model, self.lstm_metadata = LSTMDCFModel.from_checkpoint(str(lstm_path))
+                self.lstm_model_version = self.lstm_metadata.get('model_version', 'v1')
+                self.lstm_sequence_length = self.lstm_metadata.get('sequence_length', 8)
+                self.lstm_feature_scaler = self.lstm_metadata.get('feature_scaler') or self.lstm_metadata.get('scaler')
+                self.lstm_target_scaler = self.lstm_metadata.get('target_scaler')
+            else:
+                raise FileNotFoundError(f"Model not found: {lstm_path}")
             
             # Time series processor for LSTM
             self.ts_processor = TimeSeriesProcessor()
             
             self.ml_models_available = True
-            self.logger.info("✅ LSTM-DCF model loaded successfully")
+            self.logger.info(f"✅ LSTM-DCF {self.lstm_model_version} model loaded (seq_len={self.lstm_sequence_length})")
         except Exception as e:
             self.logger.warning(f"⚠️ ML models not available: {str(e)}")
             self.logger.info("Falling back to traditional scoring only")

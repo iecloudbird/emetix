@@ -29,38 +29,46 @@ Currently configured for development (`allow_origins=["*"]`). Configure appropri
 
 ### Active Endpoints (Phase 3)
 
-| Category           | Endpoint                            | Method | Description                     |
-| ------------------ | ----------------------------------- | ------ | ------------------------------- |
-| **Pipeline**       | `/api/pipeline/attention`           | GET    | Stage 1 attention stocks        |
-|                    | `/api/pipeline/qualified`           | GET    | Stage 2 qualified stocks        |
-|                    | `/api/pipeline/classified`          | GET    | Stage 3 buy/hold/watch lists    |
-|                    | `/api/pipeline/curated`             | GET    | Stage 3 curated watchlist       |
-|                    | `/api/pipeline/stock/{ticker}`      | GET    | Single stock with pillar scores |
-|                    | `/api/pipeline/trigger-scan`        | POST   | Manual trigger scan (admin)     |
-|                    | `/api/pipeline/scan-history`        | GET    | Recent scan logs                |
-| **Stock Analysis** | `/api/screener/stock/{ticker}`      | GET    | Single stock detail             |
-|                    | `/api/screener/charts/{ticker}`     | GET    | Price + 50MA/200MA overlays     |
-|                    | `/api/screener/compare`             | GET    | Side-by-side comparison         |
-|                    | `/api/screener/sectors`             | GET    | All sector benchmarks           |
-|                    | `/api/screener/summary`             | GET    | Market overview                 |
-|                    | `/api/screener/methodology`         | GET    | Scoring + pillar methodology    |
-| **Risk Profile**   | `/api/risk-profile/assess`          | POST   | Submit risk questionnaire       |
-|                    | `/api/risk-profile/position-sizing` | POST   | Position sizing calc            |
-|                    | `/api/risk-profile/methodology`     | GET    | Framework documentation         |
-| **Health**         | `/health`                           | GET    | Server health check             |
+| Category           | Endpoint                                      | Method | Description                     |
+| ------------------ | --------------------------------------------- | ------ | ------------------------------- |
+| **Pipeline**       | `/api/pipeline/attention`                     | GET    | Stage 1 attention stocks        |
+|                    | `/api/pipeline/qualified`                     | GET    | Stage 2 qualified stocks        |
+|                    | `/api/pipeline/classified`                    | GET    | Stage 3 buy/hold/watch lists    |
+|                    | `/api/pipeline/curated`                       | GET    | Stage 3 curated watchlist       |
+|                    | `/api/pipeline/stock/{ticker}`                | GET    | Single stock with pillar scores |
+|                    | `/api/pipeline/trigger-scan`                  | POST   | Manual trigger scan (admin)     |
+|                    | `/api/pipeline/scan-history`                  | GET    | Recent scan logs                |
+| **Multi-Agent AI** | `/api/multiagent/stock/{ticker}`              | GET    | Full multi-agent synthesis      |
+|                    | `/api/multiagent/stock/{ticker}/sentiment`    | GET    | News sentiment analysis only    |
+|                    | `/api/multiagent/stock/{ticker}/fundamentals` | GET    | Fundamental diagnosis only      |
+|                    | `/api/multiagent/stock/{ticker}/ml-valuation` | GET    | LSTM-DCF v2 valuation only      |
+|                    | `/api/multiagent/watchlist/analyze`           | POST   | Batch analyze watchlist         |
+| **AI Analysis**    | `/api/analysis/stock/{ticker}`                | GET    | AI-powered stock diagnosis      |
+|                    | `/api/analysis/stock/{ticker}/quick`          | GET    | Quick analysis (no AI)          |
+| **Stock Screener** | `/api/screener/stock/{ticker}`                | GET    | Single stock detail             |
+|                    | `/api/screener/charts/{ticker}`               | GET    | Price + 50MA/200MA overlays     |
+|                    | `/api/screener/compare`                       | GET    | Side-by-side comparison         |
+|                    | `/api/screener/sectors`                       | GET    | All sector benchmarks           |
+|                    | `/api/screener/sectors/{sector}`              | GET    | Sector detail with stocks       |
+|                    | `/api/screener/summary`                       | GET    | Market overview                 |
+|                    | `/api/screener/methodology`                   | GET    | Scoring + pillar methodology    |
+| **Risk Profile**   | `/api/risk-profile/assess`                    | POST   | Submit risk questionnaire       |
+|                    | `/api/risk-profile/position-sizing`           | POST   | Position sizing calc            |
+|                    | `/api/risk-profile/methodology`               | GET    | Framework documentation         |
+| **Health**         | `/health`                                     | GET    | Server health check             |
 
-### Deprecated Endpoints (To Be Removed)
+### Removed Endpoints (Phase 3 Cleanup - Jan 2025)
 
-| Endpoint                              | Replacement                  |
-| ------------------------------------- | ---------------------------- |
-| `/api/screener/watchlist`             | `/api/pipeline/qualified`    |
-| `/api/screener/watchlist/simple`      | Query param on pipeline      |
-| `/api/screener/watchlist/categorized` | `/api/pipeline/classified`   |
-| `/api/screener/watchlist/for-profile` | Profile filter on pipeline   |
-| `/api/screener/sectors/{sector}`      | Frontend filtering           |
-| `/api/screener/universe`              | Internal Stage 0             |
-| `/api/screener/scan`                  | `/api/pipeline/trigger-scan` |
-| `/api/storage/*`                      | Future enhancement           |
+> **Note**: These endpoints have been REMOVED from the codebase. Use the pipeline equivalents.
+
+| Removed Endpoint                      | Replacement                            | Status     |
+| ------------------------------------- | -------------------------------------- | ---------- |
+| `/api/screener/watchlist`             | `/api/pipeline/qualified`              | ❌ Removed |
+| `/api/screener/watchlist/simple`      | `/api/pipeline/qualified`              | ❌ Removed |
+| `/api/screener/watchlist/categorized` | `/api/pipeline/classified`             | ❌ Removed |
+| `/api/screener/watchlist/for-profile` | `/api/pipeline/qualified?profile_id=X` | ❌ Removed |
+| `/api/screener/universe`              | `/api/pipeline/summary`                | ❌ Removed |
+| `/api/screener/scan`                  | `/api/pipeline/trigger-scan`           | ❌ Removed |
 
 ---
 
@@ -269,179 +277,85 @@ const strongBuy = await fetchCuratedWatchlist("Strong Buy");
 
 ---
 
-## 📖 Legacy Endpoint Details (Still Active)
+## 🤖 Multi-Agent Analysis Endpoints (NEW - Jan 2025)
 
-### Get Watchlist (Full) - DEPRECATED
+The Multi-Agent AI system provides comprehensive stock analysis through coordinated AI agents.
 
-**Endpoint**: `GET /api/screener/watchlist`
+### 1. Full Multi-Agent Synthesis
 
-> ⚠️ **Deprecated**: Use `/api/pipeline/qualified` instead.
+**Endpoint**: `GET /api/multiagent/stock/{ticker}`
 
-**Query Parameters**:
-| Parameter | Type | Default | Description |
-| ------------ | ---- | ------- | ---------------------------------------- |
-| `n` | int | 10 | Number of stocks (1-50) |
-| `rescan` | bool | false | Force fresh market scan |
-| `consensus` | bool | false | Enable multi-model consensus scoring |
-| `education` | bool | false | Include educational insights |
-| `full_universe` | bool | false | Scan full US market (~5700 stocks) |
-| `max_tickers` | int | null | Limit tickers for full_universe mode |
+**Description**: Runs all 4 analysis agents (Sentiment, Fundamentals, ML Valuation, Synthesis) and returns a comprehensive analysis.
+
+**Path Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ticker` | string | Stock ticker symbol (e.g., AAPL) |
 
 **Response**:
 
 ```json
 {
   "status": "success",
-  "timestamp": "2025-12-31T10:00:00.000Z",
-  "model_info": {
-    "lstm_enabled": true,
-    "lstm_model": "LSTM-DCF Enhanced",
-    "valuation_method": "Hybrid LSTM-DCF + Traditional DCF"
-  },
-  "scan_params": {
-    "universe_size": 156,
-    "min_market_cap": 1000000000,
-    "max_pe_ratio": 50,
-    "max_debt_equity": 3.0
-  },
-  "benchmark_info": {
-    "use_dynamic_benchmarks": true,
-    "dynamic_sectors": 8,
-    "total_sectors": 12,
-    "benchmark_coverage": "8/12 sectors using dynamic benchmarks"
-  },
-  "summary": {
-    "results_count": 10,
-    "avg_valuation_score": 72.5,
-    "avg_margin_of_safety": 18.3,
-    "sector_distribution": {
-      "Technology": 3,
-      "Healthcare": 2,
-      "Financial Services": 2,
-      "Industrials": 3
-    }
-  },
-  "sector_benchmarks": {
-    "Technology": { "avg_pe": 28.0, "avg_pb": 6.0, "source": "dynamic" }
-  },
-  "watchlist": [
-    {
-      "rank": 1,
-      "ticker": "AAPL",
-      "company_name": "Apple Inc.",
-      "sector": "Technology",
-      "current_price": 175.5,
-      "fair_value": 210.0,
-      "margin_of_safety": 19.66,
-      "valuation_score": 78.5,
-      "recommendation": "BUY",
-      "assessment": "Undervalued",
-      "risk_level": "LOW",
-      "justification": "P/E of 28.5 is at sector avg; Strong ROE of 147%..."
-    }
-  ]
+  "ticker": "AAPL",
+  "timestamp": "2025-01-15T10:00:00Z",
+  "synthesis": "**Overall Assessment**: Apple represents a high-quality company...",
+  "sentiment_analysis": "**Market Sentiment**: Recent news coverage...",
+  "fundamental_diagnosis": "**Financial Health**: Strong balance sheet...",
+  "ml_valuation": "**LSTM-DCF v2 Valuation**: Fair value estimated at $195.50...",
+  "processing_time_seconds": 8.5
 }
 ```
 
----
+### 2. Sentiment Analysis Only
 
-### 2. Get Watchlist (Simple)
+**Endpoint**: `GET /api/multiagent/stock/{ticker}/sentiment`
 
-**Endpoint**: `GET /api/screener/watchlist/simple`
+**Description**: News sentiment analysis using Finnhub news API with AI-powered interpretation.
 
-**Query Parameters**:
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `n` | int | 10 | Number of stocks |
+### 3. Fundamental Diagnosis Only
 
-**Response** (condensed):
+**Endpoint**: `GET /api/multiagent/stock/{ticker}/fundamentals`
+
+**Description**: AI diagnosis of fundamental metrics (P/E, P/B, ROE, debt, margins).
+
+### 4. ML Valuation Only
+
+**Endpoint**: `GET /api/multiagent/stock/{ticker}/ml-valuation`
+
+**Description**: LSTM-DCF v2 fair value estimation with quarterly fundamental features.
+
+### 5. Batch Watchlist Analysis
+
+**Endpoint**: `POST /api/multiagent/watchlist/analyze`
+
+**Request Body**:
 
 ```json
 {
-  "status": "success",
-  "count": 10,
-  "watchlist": [
-    {
-      "rank": 1,
-      "ticker": "AAPL",
-      "company": "Apple Inc.",
-      "sector": "Technology",
-      "price": 175.5,
-      "fair_value": 210.0,
-      "margin_of_safety": "19.66%",
-      "score": 78.5,
-      "recommendation": "BUY",
-      "justification": "P/E of 28.5 is at sector avg...",
-      "valuation_status": "MODERATELY_UNDERVALUED",
-      "forward_metrics": {
-        "forward_pe": 25.5,
-        "trailing_pe": 28.5,
-        "pe_trend": "IMPROVING",
-        "peg_ratio": 1.2
-      }
-    }
-  ]
+  "tickers": ["AAPL", "MSFT", "GOOGL"],
+  "analysis_type": "quick"
 }
 ```
-
----
-
-### 3. Get Categorized Watchlist (NEW)
-
-**Endpoint**: `GET /api/screener/watchlist/categorized`
-
-Returns three separate lists organized by investment strategy.
-
-**Query Parameters**:
-| Parameter | Type | Default | Description |
-| ----------- | ---- | ------- | --------------------------------- |
-| `n` | int | 10 | Number of stocks per category |
-| `consensus` | bool | false | Enable multi-model consensus |
 
 **Response**:
 
 ```json
 {
   "status": "success",
-  "timestamp": "2025-01-07T10:00:00.000Z",
-  "count_per_category": 10,
-  "categories": {
-    "undervalued": "Stocks with fair value ABOVE current price (positive margin of safety)",
-    "quality": "Highest quality companies by combined metrics. May be fairly valued.",
-    "growth": "Growth At Reasonable Price (GARP) - high growth with PEG < 2.0"
-  },
-  "undervalued": [
-    {
-      "ticker": "VZ",
-      "margin_of_safety": 45.2,
-      "valuation_status": "SIGNIFICANTLY_UNDERVALUED",
-      "forward_metrics": { "forward_pe": 8.4, "pe_trend": "STABLE" }
-    }
+  "results": [
+    { "ticker": "AAPL", "synthesis": "..." },
+    { "ticker": "MSFT", "synthesis": "..." }
   ],
-  "quality": [
-    {
-      "ticker": "MSFT",
-      "valuation_score": 82.5,
-      "margin_of_safety": -15.3,
-      "valuation_status": "SLIGHTLY_OVERVALUED"
-    }
-  ],
-  "growth": [
-    {
-      "ticker": "NVDA",
-      "peg_ratio": 1.1,
-      "earnings_growth": 66.7,
-      "revenue_growth": 25.3
-    }
-  ]
+  "processing_time_seconds": 25.2
 }
 ```
 
-**Use Case**: Display different investment strategies in UI tabs.
-
 ---
 
-### 4. Get Stock Analysis
+## 📖 Stock Screener Endpoints (Active)
+
+### 1. Get Stock Analysis
 
 **Endpoint**: `GET /api/screener/stock/{ticker}`
 

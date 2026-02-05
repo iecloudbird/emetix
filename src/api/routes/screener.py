@@ -50,213 +50,18 @@ def get_screener(
     return screener
 
 
-@router.get("/watchlist", deprecated=True)
-async def get_watchlist(
-    n: int = Query(default=10, ge=1, le=50, description="Number of stocks to return"),
-    rescan: bool = Query(default=False, description="Force rescan, ignoring cache"),
-    consensus: bool = Query(default=False, description="Enable multi-model consensus scoring (LSTM+RF+Metrics)"),
-    education: bool = Query(default=False, description="Include educational insights for each metric"),
-    full_universe: bool = Query(default=False, description="Scan full US market (~5700 stocks) instead of curated 214"),
-    max_tickers: int = Query(default=None, ge=100, le=6000, description="Limit tickers for full_universe mode"),
-    profile_id: str = Query(default=None, description="Risk profile ID for position sizing"),
-    portfolio_value: float = Query(default=None, ge=1000, le=100000000, description="Portfolio value for position sizing")
-):
-    """
-    ⚠️ DEPRECATED: Use /api/pipeline/qualified instead
-    
-    This endpoint is deprecated in Phase 3. Use the new pipeline endpoints:
-    - GET /api/pipeline/qualified - Quality-filtered stocks with 4-pillar scoring
-    - GET /api/pipeline/classified - Buy/Hold/Watch lists
-    - GET /api/pipeline/attention - Stocks that triggered entry signals
-    
-    ---
-    
-    Get comprehensive watchlist of top undervalued stocks (legacy)
-    
-    Features:
-    - LSTM-DCF fair value estimation
-    - Sector-adjusted P/E comparisons
-    - Margin of safety calculations
-    - Justification for each ranking
-    """
-    try:
-        screener = get_screener(
-            enable_consensus=consensus, 
-            enable_education=education,
-            use_full_universe=full_universe,
-            max_universe_tickers=max_tickers
-        )
-        
-        # Run blocking operation in thread pool
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor,
-            lambda: screener.get_comprehensive_watchlist_json(
-                n=n, 
-                rescan=rescan,
-                profile_id=profile_id,
-                portfolio_value=portfolio_value
-            )
-        )
-        
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/watchlist/simple", deprecated=True)
-async def get_simple_watchlist(
-    n: int = Query(default=10, ge=1, le=50),
-    consensus: bool = Query(default=False, description="Enable multi-model consensus scoring"),
-    full_universe: bool = Query(default=False, description="Scan full US market"),
-    profile_id: str = Query(default=None, description="Risk profile ID for position sizing"),
-    portfolio_value: float = Query(default=None, ge=1000, description="Portfolio value for position sizing")
-):
-    """
-    ⚠️ DEPRECATED: Use /api/pipeline/qualified instead
-    
-    Simple watchlist for quick display (legacy).
-    Use /api/pipeline/qualified for the new 4-pillar scoring system.
-    """
-    try:
-        screener = get_screener(enable_consensus=consensus, use_full_universe=full_universe)
-        
-        loop = asyncio.get_event_loop()
-        stocks = await loop.run_in_executor(
-            _executor,
-            lambda: screener.get_top_undervalued(
-                n=n, 
-                profile_id=profile_id, 
-                portfolio_value=portfolio_value
-            )
-        )
-        
-        # Simplified output
-        simple = []
-        for s in stocks:
-            item = {
-                'rank': s['rank'],
-                'ticker': s['ticker'],
-                'company': s['company_name'],
-                'sector': s['sector'],
-                'price': s['current_price'],
-                'fair_value': s['fair_value'],
-                'margin_of_safety': f"{s['margin_of_safety']}%",
-                'score': s.get('effective_score', s['valuation_score']),
-                'recommendation': s['recommendation'],
-                'justification': s['justification'],
-                # New forward-looking fields
-                'valuation_status': s.get('valuation_status', 'UNKNOWN'),
-                'forward_metrics': s.get('forward_metrics', {}),
-                'list_category': s.get('list_category', 'GENERAL')
-            }
-            # Add consensus fields if available
-            if consensus and s.get('consensus_score') is not None:
-                item['consensus_score'] = round(s['consensus_score'], 1)
-                item['rf_score'] = round(s['rf_score'], 3) if s.get('rf_score') else None
-                item['confidence'] = f"{s['consensus_confidence']:.0%}" if s.get('consensus_confidence') else None
-            simple.append(item)
-        
-        return {
-            'status': 'success',
-            'count': len(simple),
-            'consensus_enabled': consensus,
-            'watchlist': simple
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/watchlist/categorized", deprecated=True)
-async def get_categorized_watchlist(
-    n: int = Query(default=10, ge=1, le=30, description="Number of stocks per category"),
-    rescan: bool = Query(default=False, description="Force rescan, ignoring cache"),
-    consensus: bool = Query(default=False, description="Enable multi-model consensus scoring")
-):
-    """
-    ⚠️ DEPRECATED: Use /api/pipeline/classified instead
-    
-    The new pipeline provides a better categorization:
-    - GET /api/pipeline/classified - Buy/Hold/Watch lists based on 4-pillar scores
-    
-    ---
-    
-    Get watchlist organized into categories (legacy):
-    1. UNDERVALUED, 2. QUALITY, 3. GROWTH
-    """
-    try:
-        screener = get_screener(enable_consensus=consensus)
-        
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor,
-            lambda: screener.get_categorized_watchlist(n_per_category=n, rescan=rescan)
-        )
-        
-        return {
-            'status': 'success',
-            'timestamp': datetime.now().isoformat(),
-            'count_per_category': n,
-            'categories': result.get('categories_explained', {}),
-            'undervalued': result.get('undervalued', []),
-            'quality': result.get('quality', []),
-            'growth': result.get('growth', [])
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/watchlist/for-profile/{profile_id}", deprecated=True)
-async def get_watchlist_for_profile(
-    profile_id: str,
-    n: int = Query(default=10, ge=1, le=50, description="Number of stocks to return"),
-    rescan: bool = Query(default=False, description="Force rescan"),
-    portfolio_value: float = Query(default=50000, ge=1000, description="Portfolio value for sizing"),
-    filter_only: bool = Query(default=False, description="If true, only return suitable stocks")
-):
-    """
-    ⚠️ DEPRECATED: Use /api/pipeline/qualified?profile_id=X instead
-    
-    Profile filtering is now built into the pipeline endpoints:
-    - GET /api/pipeline/qualified?profile_id=X - Quality stocks matching your profile
-    
-    ---
-    
-    Get personalized watchlist for a specific risk profile (legacy).
-    """
-    try:
-        screener = get_screener()
-        
-        loop = asyncio.get_event_loop()
-        
-        if filter_only:
-            result = await loop.run_in_executor(
-                _executor,
-                lambda: screener.get_filtered_watchlist_for_profile(
-                    profile_id=profile_id,
-                    n=n,
-                    rescan=rescan,
-                    portfolio_value=portfolio_value
-                )
-            )
-        else:
-            result = await loop.run_in_executor(
-                _executor,
-                lambda: screener.get_annotated_watchlist(
-                    profile_id=profile_id,
-                    n=n,
-                    rescan=rescan,
-                    portfolio_value=portfolio_value
-                )
-            )
-        
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ============================================================================
+# REMOVED DEPRECATED ENDPOINTS (Phase 3 Cleanup - Jan 2025)
+# ============================================================================
+# The following endpoints have been removed and replaced by /api/pipeline/:
+#
+# - GET /watchlist -> Use /api/pipeline/qualified
+# - GET /watchlist/simple -> Use /api/pipeline/qualified
+# - GET /watchlist/categorized -> Use /api/pipeline/classified
+# - GET /watchlist/for-profile/{profile_id} -> Use /api/pipeline/qualified?profile_id=X
+#
+# See /api/pipeline/ for the new 4-pillar scoring system.
+# ============================================================================
 
 
 @router.get("/stock/{ticker}")
@@ -533,63 +338,12 @@ async def get_market_summary():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/universe", deprecated=True)
-async def get_ticker_universe():
-    """
-    ⚠️ DEPRECATED: Internal endpoint - Stage 0 of pipeline
-    
-    The universe management is now internal to the pipeline.
-    See /api/pipeline/summary for pipeline statistics.
-    
-    ---
-    
-    Get the current ticker universe being scanned (legacy).
-    """
-    screener = get_screener()
-    
-    return {
-        'status': 'success',
-        'total_tickers': len(screener.tickers),
-        'sp500_count': len(screener.SP500_TICKERS),
-        'extended_count': len(screener.EXTENDED_TICKERS),
-        'tickers': sorted(screener.tickers)
-    }
-
-
-@router.post("/scan", deprecated=True)
-async def trigger_scan(
-    rescan: bool = Query(default=True, description="Force rescan")
-):
-    """
-    ⚠️ DEPRECATED: Use POST /api/pipeline/trigger-scan instead
-    
-    The new pipeline provides structured scanning:
-    - POST /api/pipeline/trigger-scan?scan_type=attention - Weekly attention scan
-    - POST /api/pipeline/trigger-scan?scan_type=qualified - Daily qualified update
-    
-    ---
-    
-    Trigger a full market scan (legacy).
-    """
-    try:
-        screener = get_screener()
-        
-        loop = asyncio.get_event_loop()
-        df = await loop.run_in_executor(
-            _executor,
-            lambda: screener.scan_market(use_cache=not rescan)
-        )
-        
-        return {
-            'status': 'success',
-            'message': 'Scan complete',
-            'stocks_analyzed': len(screener.tickers),
-            'stocks_passed': len(df),
-            'timestamp': datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ============================================================================
+# REMOVED DEPRECATED ENDPOINTS (Phase 3 Cleanup - Jan 2025)
+# ============================================================================
+# - GET /universe -> Use /api/pipeline/summary
+# - POST /scan -> Use /api/pipeline/trigger-scan
+# ============================================================================
 
 
 @router.get("/methodology")
