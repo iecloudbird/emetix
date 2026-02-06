@@ -15,7 +15,7 @@ services:
         value: production
       # Add your API keys here (from environment variables)
       - key: GEMINI_API_KEY
-        sync: false  # Set in Render dashboard instead
+        sync: false # Set in Render dashboard instead
       - key: GROQ_API_KEY
         sync: false
       - key: FINNHUB_API_KEY

@@ -407,9 +407,13 @@ export default function TopPicksPage() {
           <Badge variant="outline" className="w-fit">
             <Clock className="mr-1 h-3 w-3" />
             {curatedData?.metadata?.generated_at
-              ? new Date(curatedData.metadata.generated_at as string).toLocaleDateString()
+              ? new Date(
+                  curatedData.metadata.generated_at as string,
+                ).toLocaleDateString()
               : summary?.pipeline?.last_scan?.completed_at
-                ? new Date(summary.pipeline.last_scan.completed_at).toLocaleDateString()
+                ? new Date(
+                    summary.pipeline.last_scan.completed_at,
+                  ).toLocaleDateString()
                 : isLoading
                   ? "Loading..."
                   : new Date().toLocaleDateString()}

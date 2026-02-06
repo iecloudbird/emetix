@@ -642,7 +642,7 @@ function SynthesisSection({ data }: { data?: MultiAgentSynthesis }) {
 
       {/* Scores Summary Cards */}
       {scores && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           <div className="p-2 rounded-lg bg-muted/50 text-center">
             <div className="text-xs text-muted-foreground">Sentiment</div>
             <div
@@ -673,6 +673,40 @@ function SynthesisSection({ data }: { data?: MultiAgentSynthesis }) {
               {(scores.quality * 100).toFixed(0)}%
             </div>
           </div>
+          {scores.growth != null && (
+            <div className="p-2 rounded-lg bg-muted/50 text-center">
+              <div className="text-xs text-muted-foreground">Growth</div>
+              <div
+                className={cn(
+                  "text-lg font-bold",
+                  scores.growth >= 0.6
+                    ? "text-green-600"
+                    : scores.growth <= 0.4
+                      ? "text-red-600"
+                      : "text-amber-600",
+                )}
+              >
+                {(scores.growth * 100).toFixed(0)}%
+              </div>
+            </div>
+          )}
+          {scores.value != null && (
+            <div className="p-2 rounded-lg bg-muted/50 text-center">
+              <div className="text-xs text-muted-foreground">Value</div>
+              <div
+                className={cn(
+                  "text-lg font-bold",
+                  scores.value >= 0.6
+                    ? "text-green-600"
+                    : scores.value <= 0.4
+                      ? "text-red-600"
+                      : "text-amber-600",
+                )}
+              >
+                {(scores.value * 100).toFixed(0)}%
+              </div>
+            </div>
+          )}
           {scores.fair_value && (
             <div className="p-2 rounded-lg bg-muted/50 text-center">
               <div className="text-xs text-muted-foreground">Fair Value</div>
