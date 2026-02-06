@@ -49,7 +49,7 @@ ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
 FINNHUB_API_KEY=your_finnhub_key
 
 # Optional (for watchlist storage)
-MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
+MONGODB_URI=your_mongoDB_connection_url_here
 MONGODB_DATABASE=emetix
 ```
 

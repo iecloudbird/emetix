@@ -27,7 +27,7 @@ LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'gemini')  # Using Gemini for better to
 
 # MongoDB Atlas Configuration (primary storage for watchlists, education)
 # Get connection string from: https://cloud.mongodb.com/
-MONGODB_URI = os.getenv('MONGODB_URI', '')  # mongodb+srv://user:pass@cluster.mongodb.net/
+MONGODB_URI = os.getenv('MONGODB_URI', '') 
 MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'emetix_pipeline')
 
 

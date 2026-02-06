@@ -48,7 +48,7 @@ python -c "from src.analysis.stock_screener import StockScreener; print('OK')"
 GEMINI_API_KEY=your_google_ai_api_key
 
 # MongoDB Atlas
-MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/emetix
+MONGODB_URI=your_mongoDB_connection_url_here
 
 # Optional (for training data)
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
@@ -449,7 +449,7 @@ curl http://localhost:8000/api/screener/stock/AAPL
 6. Add to `.env`:
 
 ```env
-MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/
+MONGODB_URI=your_mongoDB_connection_url_here
 MONGODB_DATABASE=emetix
 ```
 
@@ -546,7 +546,7 @@ All within free tier - **$0/month for MVP**.
 GEMINI_API_KEY=your_google_ai_api_key
 
 # Database (MongoDB Atlas)
-MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
+MONGODB_URI=your_mongoDB_connection_url_here
 MONGODB_DATABASE=emetix
 
 # Optional
