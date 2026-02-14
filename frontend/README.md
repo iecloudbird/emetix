@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Emetix Frontend
 
-## Getting Started
+Next.js 16 web application for the Emetix stock analysis platform.
 
-First, run the development server:
+---
+
+## Tech Stack
+
+| Technology | Version | Purpose |
+| ---------- | ------- | ------- |
+| Next.js | 16.1.1 | React framework (App Router) |
+| React | 19.2.3 | UI library |
+| TypeScript | 5 | Type safety |
+| Tailwind CSS | v4 | Styling |
+| shadcn/ui | Radix primitives | Accessible UI components |
+| Recharts | 3.6 | Charts & data visualisation |
+| @tanstack/react-query | 5.90 | Server state management |
+| react-hook-form + zod | 7.70 / 4.3 | Form handling & validation |
+
+---
+
+## Pages
+
+| Route | Description |
+| ----- | ----------- |
+| `/` | Home — dashboard overview |
+| `/screener` | Stock screener with search & filters |
+| `/stock/[ticker]` | Stock detail — charts, fundamentals, AI analysis |
+| `/pipeline` | Pipeline dashboard (attention → qualified → curated) |
+| `/profile/risk-assessment` | Risk questionnaire & profile results |
+| `/about` | About Emetix & methodology |
+
+---
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+
+# Create .env.local
+echo NEXT_PUBLIC_API_URL=http://localhost:8000 > .env.local
+
+# Development
+npm run dev          # http://localhost:3000
+
+# Production build
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+src/
+├── app/              # Next.js App Router pages
+├── components/
+│   ├── ui/           # shadcn/ui primitives (Radix)
+│   ├── layout/       # Header, Footer, Navigation
+│   ├── charts/       # Price & volume charts (Recharts)
+│   ├── stocks/       # Stock cards, tables, detail panels
+│   ├── pipeline/     # Pipeline stage views
+│   └── profile/      # Risk assessment forms & results
+├── hooks/            # Custom React hooks
+├── lib/
+│   ├── api.ts        # API client (25 exported functions)
+│   └── utils.ts      # Utility functions
+└── types/            # TypeScript type definitions
+```
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## API Client
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+All backend communication goes through `src/lib/api.ts`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Base URL: `process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"`
 
-## Deploy on Vercel
+Imports use the `@/` path alias (mapped to `./src/`):
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```typescript
+import { fetchStock } from "@/lib/api";
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Deployment
+
+Deployed on **Vercel** with root directory set to `frontend`.
+
+See [docs/07_DEPLOYMENT.md](../docs/07_DEPLOYMENT.md) for full details.

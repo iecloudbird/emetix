@@ -1,602 +1,272 @@
-# 3. Machine Learning Pipeline
-
-> **LSTM-DCF + Transparent GARP Scoring**
+# 3. ML Pipeline & Scoring Methodology
 
 ---
 
-## 🎯 ML Strategy Overview
+## Overview
 
-Emetix uses a **simplified, transparent scoring approach** for stock valuation:
+Emetix uses a multi-layered approach to stock valuation and scoring:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CONSENSUS SCORING SYSTEM                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐     │
-│  │   LSTM-DCF     │  │  GARP Score    │  │  Risk Score    │     │
-│  │   Fair Value   │  │ (Forward P/E   │  │  (Beta + Vol)  │     │
-│  │                │  │  + PEG Ratio)  │  │                │     │
-│  │   Weight:      │  │   Weight:      │  │   Weight:      │     │
-│  │     50%        │  │     25%        │  │     25%        │     │
-│  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘     │
-│          │                   │                   │               │
-│          └───────────────────┼───────────────────┘               │
-│                              ▼                                   │
-│                 ┌─────────────────────────┐                      │
-│                 │   Weighted Consensus    │                      │
-│                 │   + MoS Penalty         │                      │
-│                 └─────────────────────────┘                      │
-│                              │                                   │
-│                              ▼                                   │
-│                 ┌─────────────────────────┐                      │
-│                 │  Valuation Score 0-100  │                      │
-│                 │  + Recommendation       │                      │
-│                 └─────────────────────────┘                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-> **Architecture Shift (Jan 2025)**: RF Ensemble was found to use P/E ratio
-> at 99.93% importance, making it a redundant black-box. Replaced with
-> transparent GARP scoring (Forward P/E + PEG) for explainability.
+1. **LSTM-DCF V2** — Deep learning fair value estimation using quarterly fundamentals
+2. **5-Pillar Composite Scoring** — Systematic stock grading (v3.1)
+3. **Quality Growth Gate** — 4-path qualification filter
+4. **Consensus Scoring** — Weighted combination of LSTM-DCF, GARP, and Risk scores
+5. **3-Stage Pipeline** — Filtering ~5,800 stocks down to ~100 curated picks
 
 ---
 
-## 📊 Model 1: LSTM-DCF (Deep Learning)
+## 1. LSTM-DCF V2 Model
 
-### Purpose
+### Architecture
 
-Predict **fair value** by forecasting FCF growth rates using time-series patterns.
+| Parameter       | Value                                                              |
+| --------------- | ------------------------------------------------------------------ |
+| Model type      | LSTM (PyTorch Lightning)                                           |
+| Hidden size     | 128                                                                |
+| Num layers      | 2                                                                  |
+| Dropout         | 0.3                                                                |
+| Loss function   | Huber Loss                                                         |
+| Sequence length | 8 quarters                                                         |
+| Input features  | Quarterly fundamentals (revenue, FCF, margins, growth rates, etc.) |
+| Output          | 10-year FCFF forecast for DCF valuation                            |
+| Accelerator     | `auto` (GPU via CUDA 11.8 when available)                          |
 
-### Architecture (V2 - Jan 2026)
+### Model Files
 
-The current production model is **LSTM-DCF v2** with improved architecture:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    LSTM-DCF MODEL V2                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Input Layer                                                     │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Sequence: 8 quarters (2 years) × 16 features            │    │
-│  │ Features: revenue, fcf, ebitda, margins, growth rates   │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  Input Normalization (NEW in v2)                                 │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ BatchNorm1d(16) - Stabilizes input distribution         │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  LSTM Layers (2 layers)                                          │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Layer 1: LSTM(input=16, hidden=128, dropout=0.3)        │    │
-│  │ Layer 2: LSTM(hidden=128, dropout=0.3)                  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  Fully Connected                                                 │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ FC1: Linear(128 → 64) + ReLU + Dropout(0.3)             │    │
-│  │ FC2: Linear(64 → 2) → [Revenue Growth, FCF Growth]      │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  Output: Predicted growth rates → DCF Fair Value                 │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### V2 Architecture Changes (Jan 2026)
-
-| Parameter           | V1                | V2              | Rationale                            |
-| ------------------- | ----------------- | --------------- | ------------------------------------ |
-| Sequence Length     | 60 quarters       | 8 quarters      | Recent trends, more training samples |
-| LSTM Layers         | 3                 | 2               | Reduced overfitting                  |
-| Dropout             | 0.2               | 0.3             | Better regularization                |
-| Input Normalization | None              | BatchNorm1d     | Stabilizes training                  |
-| Loss Function       | MSE               | Huber (δ=1.0)   | Robust to outliers                   |
-| Optimizer           | Adam              | AdamW (wd=0.01) | Better generalization                |
-| Output Clipping     | ±30-50% hardcoded | No clipping     | Full expression range                |
-| Feature Scaler      | StandardScaler    | RobustScaler    | Outlier handling                     |
-| Target Scaler       | StandardScaler    | StandardScaler  | Mean-centered outputs                |
+| File                         | Location  | Purpose                       |
+| ---------------------------- | --------- | ----------------------------- |
+| `lstm_dcf_enhanced.pth`      | `models/` | Primary production model (V2) |
+| `lstm_dcf_final.pth`         | `models/` | Original V1 model             |
+| `lstm_growth_forecaster.pth` | `models/` | Growth forecasting variant    |
 
 ### Training Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                 LSTM-DCF TRAINING PIPELINE                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  [1] DATA COLLECTION                                             │
-│      ├── Alpha Vantage API (quarterly financials)                │
-│      │   ├── Income Statement                                    │
-│      │   ├── Cash Flow Statement                                 │
-│      │   └── Balance Sheet                                       │
-│      │                                                           │
-│      └── Output: data/raw/financial_statements/                  │
-│          ├── {ticker}_income.csv                                 │
-│          ├── {ticker}_cashflow.csv                               │
-│          └── {ticker}_balance.csv                                │
-│                              │                                   │
-│                              ▼                                   │
-│  [2] FEATURE ENGINEERING                                         │
-│      ├── Extract 16 features per quarter:                        │
-│      │   revenue, capex, d&a, fcf, ebitda, margins...            │
-│      ├── Normalize by total assets                               │
-│      └── Standardize (mean=0, std=1)                             │
-│                              │                                   │
-│      Output: data/processed/lstm_dcf_training/                   │
-│                              │                                   │
-│                              ▼                                   │
-│  [3] SEQUENCE CREATION                                           │
-│      ├── Group by ticker                                         │
-│      ├── Create overlapping windows (60 steps)                   │
-│      └── Split: 70% train, 15% val, 15% test                     │
-│                              │                                   │
-│                              ▼                                   │
-│  [4] TRAINING                                                    │
-│      ├── PyTorch Lightning (GPU acceleration)                    │
-│      ├── Early stopping (patience=10)                            │
-│      ├── Learning rate: 0.001 with scheduler                     │
-│      └── Batch size: 64                                          │
-│                              │                                   │
-│      Output: models/lstm_dcf_enhanced.pth (1.29 MB)              │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+Quarterly Fundamentals (yfinance / Alpha Vantage)
+        │
+        ▼
+┌─────────────────────────┐
+│  lstm_v2_processor.py   │  Feature engineering
+│  8-quarter sequences    │  Normalisation (MinMaxScaler)
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│  train_lstm_dcf_v2.py   │  PyTorch Lightning training
+│  OR train_lstm_dcf_     │  Huber loss, Adam optimiser
+│  enhanced.py            │  Early stopping, LR scheduler
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│  models/lstm_dcf_       │  Saved checkpoint (.pth)
+│  enhanced.pth           │
+└─────────────────────────┘
 ```
 
-### Training Commands
+**Training scripts**: `scripts/lstm/train_lstm_dcf_v2.py`, `scripts/lstm/train_lstm_dcf_enhanced.py`
 
-```powershell
-# GPU training (recommended)
-python scripts/lstm/train_lstm_dcf_enhanced.py
+**GPU acceleration**: Automatically uses CUDA when available. RTX 3050: ~6 min vs ~30–60 min on CPU.
 
-# Training time: ~6 minutes on RTX 3050
-# CPU fallback: ~30-60 minutes
-```
+### Inference
 
-### Model Files
-
-| File                           | Version | Size    | Description                         |
-| ------------------------------ | ------- | ------- | ----------------------------------- |
-| `models/lstm_dcf_enhanced.pth` | **V2**  | ~650 KB | Current production model (Jan 2026) |
-| `models/lstm_dcf_final.pth`    | V1      | ~1.3 MB | Legacy model (deprecated)           |
-
-> **Note**: V2 checkpoint includes `feature_scaler` (RobustScaler), `target_scaler` (StandardScaler), and `model_version: 'v2'` marker.
-
----
-
-## 📊 Model 2: GARP Scoring (Growth at Reasonable Price)
-
-### Purpose
-
-Score stocks by **value + growth balance** using transparent metrics.
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GARP SCORING MODEL                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Input Metrics                                                   │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ • Forward P/E      • Trailing P/E    • PEG Ratio        │    │
-│  │ • Revenue Growth   • EPS Growth      • FCF Growth       │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  Scoring Logic (Transparent)                                     │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ • PEG < 1.0: Strong value signal (growth > P/E)         │    │
-│  │ • PEG 1.0-2.0: Fair value (balanced)                    │    │
-│  │ • PEG > 2.0: Overvalued relative to growth              │    │
-│  │ • Growth adjustment: reward double-digit growth         │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                              │                                   │
-│                              ▼                                   │
-│  Output (0-100 Score)                                            │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ • GARP Score: 0-100 (higher = better value/growth)      │    │
-│  │ • Classification: Undervalued / Fair / Overvalued       │    │
-│  │ • Transparent components: easily explained to users     │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Scoring Formula
+The model is loaded by `EnhancedValuationAgent` and used via the `MLPoweredValuation` tool:
 
 ```python
-# PEG = P/E ÷ Growth Rate (lower = better value)
-peg_score = pe_ratio / (growth_rate * 100)
+from src.models.deep_learning.lstm_dcf import LSTMDCFModel
 
-# GARP Score (0-100, higher = better)
-if peg < 1.0:
-    garp_score = 80 + (1 - peg) * 20  # 80-100 for PEG < 1
-elif peg < 2.0:
-    garp_score = 60 + (2 - peg) * 20  # 60-80 for PEG 1-2
-else:
-    garp_score = max(0, 60 - (peg - 2) * 20)  # < 60 for PEG > 2
+model = LSTMDCFModel(input_size=12, hidden_size=128, num_layers=2)
+model.load_model(str(MODELS_DIR / "lstm_dcf_enhanced.pth"))
+model.eval()  # Inference mode
 ```
-
-> **Architecture Note (Jan 2026)**: RF Ensemble was deprecated after analysis
-> showed 99.93% P/E importance. GARP scoring provides the same insights
-> with full transparency and explainability.
-
-### Model Files
-
-| File                           | Size    | Description                 |
-| ------------------------------ | ------- | --------------------------- |
-| `models/lstm_dcf_final.pth`    | ~3.7 MB | LSTM-DCF trained model      |
-| `models/lstm_dcf_enhanced.pth` | ~4.0 MB | Enhanced LSTM (16 features) |
 
 ---
 
-## 🔄 Inference Pipeline
+## 2. Five-Pillar Composite Scoring (v3.1)
 
-### Fair Value Sanity Checks (Updated Jan 2026)
+**Source**: `src/analysis/pillar_scorer.py` (828 lines)
 
-To prevent extreme predictions from misleading users:
+### Pillar Weights (v3.1 — Value-Focused)
 
-| Check                | Limit            | Rationale                       |
-| -------------------- | ---------------- | ------------------------------- |
-| **Fair Value Cap**   | 2× current price | Max 100% upside is realistic    |
-| **Fair Value Floor** | 0.4× current     | Max 60% downside                |
-| **Margin of Safety** | -100% to +100%   | Prevents display of extreme MoS |
+| Pillar       | Weight  | Key Components                                               |
+| ------------ | ------- | ------------------------------------------------------------ |
+| **Value**    | **25%** | Margin of Safety (40%), P/E vs Sector (30%), FCF Yield (30%) |
+| **Quality**  | **25%** | FCF ROIC, Profit Margin, ROE, Debt-to-Equity                 |
+| **Growth**   | **20%** | Revenue Growth, Earnings Growth, LSTM Forecast bonus         |
+| **Safety**   | **15%** | Beta, Volatility, Max Drawdown Risk                          |
+| **Momentum** | **15%** | RSI, MA Crossovers, Market-share trend                       |
 
-> **Why cap at 100%?** A stock showing 200%+ MoS suggests model uncertainty,
-> not a guaranteed opportunity. Retail investors should see realistic ranges.
+Each pillar produces a score on a **0–100 scale**. The weighted composite determines stock classification.
 
-### Real-Time Scoring
+### Classification Thresholds (v3.1)
+
+| Threshold             | Value | Description                                          |
+| --------------------- | ----- | ---------------------------------------------------- |
+| `BUY_THRESHOLD`       | 70    | Composite score for Buy classification               |
+| `HOLD_THRESHOLD`      | 60    | Composite score for Hold classification              |
+| `MIN_QUALIFIED_SCORE` | 60    | Minimum to enter qualified pool                      |
+| `PILLAR_FLOOR`        | 40    | Minimum for any core pillar (Value, Quality, Safety) |
+
+### Classification Rules
+
+| Classification | Criteria                                                       |
+| -------------- | -------------------------------------------------------------- |
+| **Buy**        | MoS ≥ 25% AND composite ≥ 70 AND no pillar floor failures      |
+| **Hold**       | MoS −5% to 25% AND composite ≥ 60 AND no pillar floor failures |
+| **Watch**      | Everything else                                                |
+
+### Watch Sub-Categories
+
+| Sub-Category             | Criteria                                     |
+| ------------------------ | -------------------------------------------- |
+| `high_quality_expensive` | Quality or Growth > 70, but MoS < 0%         |
+| `cheap_junk`             | Value > 70, but Quality or Safety < 50%      |
+| `needs_research`         | Default Watch (does not meet other criteria) |
+
+---
+
+## 3. Quality Growth Gate
+
+**Source**: `src/analysis/quality_growth_gate.py`
+
+A 4-path filter that ensures only genuine growth companies pass through to the qualified pool:
+
+| Path | Name               | Min Revenue Growth | Min FCF ROIC |
+| ---- | ------------------ | ------------------ | ------------ |
+| 1    | Quality Compounder | ≥ 10%              | ≥ 15%        |
+| 2    | Balanced Growth    | ≥ 15%              | ≥ 10%        |
+| 3    | Growth Focused     | ≥ 20%              | ≥ 5%         |
+| 4    | Hypergrowth        | ≥ 25%              | FCF > 0 only |
+
+Stocks must qualify through **at least one path** to pass the gate.
+
+---
+
+## 4. Consensus Scoring
+
+**Source**: `config/model_config.yaml`, `src/models/ensemble/consensus_scorer.py`
+
+### Agent-Level Consensus Weights
+
+| Model          | Weight  | Rationale                            |
+| -------------- | ------- | ------------------------------------ |
+| **LSTM-DCF**   | **50%** | Highest-confidence ML fair value     |
+| **GARP Score** | **25%** | Growth-at-Reasonable-Price screening |
+| **Risk Score** | **25%** | Beta-based risk classification       |
 
 ```python
-# How the screener uses ML models:
+from src.models.ensemble.consensus_scorer import ConsensusScorer
 
-class StockScreener:
-    def __init__(self):
-        # Load models at startup
-        self.lstm_model = LSTMDCFModel()
-        self.lstm_model.load_model("models/lstm_dcf_enhanced.pth")
-
-    def _calculate_lstm_fair_value(self, ticker, data):
-        """
-        1. Fetch historical data
-        2. Create feature sequence (60 steps)
-        3. Normalize features
-        4. Run LSTM inference
-        5. Convert growth rate → fair value
-        6. Apply sanity caps (0.4x - 2x current price)
-        """
-        features = self._extract_features(data)
-        growth_rate = self.lstm_model.predict(features)
-        fair_value = self._dcf_calculation(growth_rate, data)
-        # Cap to realistic range
-        fair_value = np.clip(fair_value, price * 0.4, price * 2.0)
-        return fair_value
-
-    def _calculate_valuation_score(self, data):
-        """
-        Weighted scoring (Updated Jan 2026):
-        - Forward P/E:      15%  # Future earnings outlook
-        - PEG Ratio:        15%  # Growth at reasonable price
-        - Earnings Growth:  10%  # Forward-looking growth
-        - P/B vs sector:    10%
-        - Margin of Safety: 15%  # LSTM fair value vs price (capped ±100%)
-        - FCF Yield:        12%
-        - Profitability:    13%  # ROE + margins
-        - Financial Health: 10%  # Current/quick ratios
-
-        Key improvements:
-        - Forward P/E < 15: Excellent, > 30: Poor
-        - PEG < 1: Excellent, 1-2: Good (GARP), > 3: Poor
-        - Negative MoS penalized (multiplier 0.60-0.75)
-        """
-        # Returns 0-100 score
+scorer = ConsensusScorer()
+consensus = scorer.calculate_consensus({
+    'lstm_dcf': 0.70,   # 50% weight
+    'garp': 0.65,       # 25% weight
+    'risk': 0.60        # 25% weight
+})
 ```
 
-### Stock Universe
+### WatchlistManagerAgent Weights (ML-Enhanced)
 
-| Universe     | Count  | Description                              |
-| ------------ | ------ | ---------------------------------------- |
-| S&P 500 Core | ~150   | Large-cap blue chips                     |
-| Extended     | ~64    | Growth tech, mid-cap opportunities       |
-| **Curated**  | ~214   | Default screening universe               |
-| **Full US**  | ~5,700 | All US-traded common stocks (NASDAQ FTP) |
+When LSTM models are available:
 
-#### Full Universe Mode (NEW - Jan 2025)
+| Component          | Weight |
+| ------------------ | ------ |
+| LSTM-DCF Valuation | 50%    |
+| Growth Score       | 15%    |
+| Sentiment Score    | 12%    |
+| Valuation Score    | 13%    |
+| Risk Score         | 10%    |
 
-The screener can now scan the **entire US stock market** instead of the curated 214-ticker list:
+**Fallback** (no ML models):
 
-```python
-# API endpoint
-GET /api/screener/watchlist?full_universe=true
-
-# Python usage
-screener = StockScreener(use_full_universe=True)
-stocks = screener.get_top_undervalued(n=20)
-
-# Limit for faster results (recommended for testing)
-screener = StockScreener(use_full_universe=True, max_universe_tickers=500)
-```
-
-**Performance Notes**:
-
-- Full scan takes 10-30 minutes depending on market data availability
-- Uses `src/data/fetchers/ticker_universe.py` to fetch from NASDAQ FTP
-- Tickers cached for 24 hours to avoid repeated downloads
-- Filters: Common stocks only (excludes ETFs, ADRs, warrants, preferred)
-
-> **Tip**: For production, consider running full scans as background jobs and
-> caching results rather than real-time scanning.
-
-### Categorized Watchlist
-
-The screener now provides three separate lists based on investment strategy:
-
-| Category        | Selection Criteria                       | Use Case                     |
-| --------------- | ---------------------------------------- | ---------------------------- |
-| **Undervalued** | Positive Margin of Safety (fair > price) | Deep value investing         |
-| **Quality**     | Highest valuation score (0-100)          | Blue-chip, may be fair value |
-| **Growth**      | PEG < 2.0 + earnings growth > 10% (GARP) | Growth at reasonable price   |
-
-```python
-# Example usage
-screener = StockScreener()
-categorized = screener.get_categorized_watchlist(n=10)
-# Returns: { 'undervalued': [...], 'quality': [...], 'growth': [...] }
-```
-
-### Valuation Status Classification
-
-| Status                    | Margin of Safety | Badge Color |
-| ------------------------- | ---------------- | ----------- |
-| SIGNIFICANTLY_UNDERVALUED | ≥ 30%            | 🟢 Green    |
-| MODERATELY_UNDERVALUED    | 10% - 30%        | 🟢 Green    |
-| SLIGHTLY_UNDERVALUED      | 0% - 10%         | 🟡 Yellow   |
-| FAIRLY_VALUED             | -5% - 0%         | ⚪ Gray     |
-| SLIGHTLY_OVERVALUED       | -15% - -5%       | 🟡 Yellow   |
-| MODERATELY_OVERVALUED     | -30% - -15%      | 🟠 Orange   |
-| SIGNIFICANTLY_OVERVALUED  | < -30%           | 🔴 Red      |
-
-### Inference Performance
-
-| Metric                 | Target  | Actual  |
-| ---------------------- | ------- | ------- |
-| Single stock           | < 300ms | ~200ms  |
-| Full scan (150 stocks) | < 2 min | ~90 sec |
-| Model load time        | < 1 sec | ~500ms  |
+| Component | Weight |
+| --------- | ------ |
+| Growth    | 30%    |
+| Sentiment | 25%    |
+| Valuation | 20%    |
+| Risk      | 15%    |
+| Macro     | 10%    |
 
 ---
 
-## 🎯 Pillar Scoring System (Phase 3)
+## 5. Three-Stage Quality Growth Pipeline
 
-### Overview
+### Stage 1 — Attention Scan (Weekly)
 
-Pillar scoring provides a **transparent, modular** evaluation framework that complements LSTM-DCF fair value calculation.
+**Input**: ~5,800 US stocks  
+**Output**: ~200–400 attention-worthy stocks
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    PILLAR SCORING SYSTEM                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Each pillar = 0-100 score, 25% weight in composite              │
-│                                                                  │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────┐│
-│  │    VALUE     │ │   QUALITY    │ │    GROWTH    │ │  SAFETY  ││
-│  │     25%      │ │     25%      │ │     25%      │ │   25%    ││
-│  ├──────────────┤ ├──────────────┤ ├──────────────┤ ├──────────┤│
-│  │ • MoS (LSTM) │ │ • FCF ROIC   │ │ • Revenue Gr │ │ • Beta   ││
-│  │ • P/E vs     │ │ • ROE vs     │ │ • Earnings Gr│ │ • Vol    ││
-│  │   sector     │ │   sector     │ │ • LSTM Pred  │ │ • D/E    ││
-│  │ • Forward PE │ │ • Profit Mgn │ │ • PEG Ratio  │ │ • Curr   ││
-│  │ • EV/EBITDA  │ │ • D/E ratio  │ │              │ │   Ratio  ││
-│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────┘│
-│                                                                  │
-│  COMPOSITE = (VALUE + QUALITY + GROWTH + SAFETY) / 4             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+**5 Attention Triggers** (any one qualifies):
 
-### Pillar Component Weights
+| Trigger                 | Condition                                           |
+| ----------------------- | --------------------------------------------------- |
+| A — Undervaluation      | P/E < 15 AND P/B < 2.0                              |
+| B — Income + Safety     | Dividend Yield > 3% AND Payout < 75% AND Beta < 1.2 |
+| C — Momentum Shift      | RSI crossed above 30 (oversold recovery)            |
+| D — Growth at Value     | PEG < 1.5 AND Revenue Growth > 10%                  |
+| E — Quality Compounding | ROE > 15% AND Debt/Equity < 0.5 AND Margin > 20%    |
 
-#### VALUE Pillar (25% of Composite)
+**Veto**: Beneish M-Score > −1.78 → flagged as potential earnings manipulation.
 
-| Component     | Weight | Scoring Logic                                    |
-| ------------- | ------ | ------------------------------------------------ |
-| LSTM MoS      | 40%    | >30%=100, 20-30%=80, 10-20%=60, 0-10%=40, <0%=20 |
-| P/E vs Sector | 25%    | >30% below=100, 15-30%=80, avg=50, >30% above=20 |
-| Forward P/E   | 20%    | Improving trend bonus, vs sector comparison      |
-| EV/EBITDA     | 15%    | <10=100, 10-15=70, 15-20=50, >20=30              |
+**Script**: `scripts/pipeline/weekly_attention_scan.py`
 
-#### QUALITY Pillar (25% of Composite)
+### Stage 2 — Qualification (Daily)
 
-| Component     | Weight | Scoring Logic                                    |
-| ------------- | ------ | ------------------------------------------------ |
-| FCF ROIC      | 35%    | >20%=100, 15-20%=85, 10-15%=70, 5-10%=50, <5%=30 |
-| ROE vs Sector | 25%    | >1.5x sector=100, 1.2x=80, 1x=60, <0.8x=40       |
-| Profit Margin | 25%    | >25%=100, 15-25%=80, 8-15%=60, <8%=40            |
-| Debt/Equity   | 15%    | <0.3=100, 0.3-0.6=80, 0.6-1=60, 1-2=40, >2=20    |
+**Input**: Attention stocks  
+**Output**: ~100–200 qualified stocks
 
-#### GROWTH Pillar (25% of Composite)
+Applies the **5-Pillar Composite Scoring** to each stock. Qualification criteria:
 
-| Component       | Weight | Scoring Logic                                    |
-| --------------- | ------ | ------------------------------------------------ |
-| LSTM Predicted  | 30%    | Normalized to 0-100 based on prediction range    |
-| Revenue Growth  | 30%    | >20%=100, 15-20%=80, 10-15%=60, 5-10%=40, <5%=20 |
-| Earnings Growth | 25%    | Similar scale to revenue                         |
-| PEG Ratio       | 15%    | <1=100, 1-1.5=80, 1.5-2=60, 2-3=40, >3=20        |
+- Composite score ≥ 60, **OR**
+- At least 2 pillars scoring ≥ 65
 
-#### SAFETY Pillar (25% of Composite)
+**Script**: `scripts/pipeline/daily_qualified_update_v3.py`
 
-| Component     | Weight | Scoring Logic                                         |
-| ------------- | ------ | ----------------------------------------------------- |
-| Beta          | 35%    | <0.8=100, 0.8-1.0=80, 1.0-1.3=60, 1.3-1.5=40, >1.5=20 |
-| Volatility    | 25%    | <15%=100, 15-25%=80, 25-35%=60, 35-50%=40, >50%=20    |
-| Current Ratio | 20%    | >2=100, 1.5-2=80, 1-1.5=60, <1=30                     |
-| MoS Buffer    | 20%    | How much cushion above profile's min MoS threshold    |
+### Stage 3 — Classification & Curation (On-Demand)
 
-### Management Quality Bonus (Finnhub Data)
+**Input**: Qualified stocks  
+**Output**: ~100 curated watchlist entries
 
-Applied as ±10 points to QUALITY pillar:
+Classifies stocks as Buy / Hold / Watch and curates the final list:
 
-| Signal          | Condition           | Points |
-| --------------- | ------------------- | ------ |
-| Insider Buying  | 3-month ratio > 1.5 | +5     |
-| Active Buybacks | >2% of shares TTM   | +3     |
-| Dividend Growth | 5+ year streak      | +2     |
-| Insider Selling | 3-month ratio < 0.5 | -5     |
-| No Buybacks     | And FCF > 0         | -2     |
+| Tier         | Count | Criteria                                     |
+| ------------ | ----- | -------------------------------------------- |
+| Strong Buy   | ~15   | Composite ≥ 70, MoS ≥ 25%, no floor failures |
+| Moderate Buy | ~15   | Composite ≥ 70, MoS 15–25%                   |
+| Hold         | ~30   | Composite ≥ 60, MoS −5% to 15%               |
+| Watch        | ~40   | Below Hold criteria, sub-categorised         |
 
-### Classification Thresholds
-
-| Classification | MoS Requirement | Score Requirement     |
-| -------------- | --------------- | --------------------- |
-| **BUY**        | ≥ 20%           | ≥ 70                  |
-| **HOLD**       | -10% to +20%    | ≥ 70                  |
-| **WATCH**      | Any             | ≥ 60 (qualified list) |
+**Script**: `scripts/pipeline/stage3_curate_watchlist.py`
 
 ---
 
-## 📈 FCF Growth Prediction Evaluation (Jan 2026)
+## Backtest Methodology
 
-### Evaluation Methodology
+### Approach
 
-The model is evaluated on its **core task**: predicting FCF growth rates. This is more meaningful than comparing stock returns to SPY, as it directly measures what the model predicts.
+- **Year-by-year cohort analysis** — Group entry signals by year, measure 5-year outcomes
+- **Matched SPY baseline** — Compare identical holding periods against S&P 500
+- **Win rate** — Percentage of cohorts outperforming the benchmark
 
-- **Data**: 144 tickers, 10,480 quarterly samples (2003-2025)
-- **Metric**: Compare predicted FCF growth to actual FCF CAGR over various horizons
-- **Key insight**: Monotonic quintile ranking is the most important metric for portfolio construction
+### Honest Metrics
 
-### Results by Horizon
+| Metric             | Value   | Interpretation                             |
+| ------------------ | ------- | ------------------------------------------ |
+| Signal correlation | 0.2–0.4 | Moderate                                   |
+| Direction accuracy | ~31%    | Weak individual prediction                 |
+| Cohort win rate    | ~80%    | 80% of yearly cohorts beat SPY (2010–2020) |
 
-| Horizon     | Samples | Correlation | Direction Accuracy | MAE   | Quintile Monotonic? |
-| ----------- | ------- | ----------- | ------------------ | ----- | ------------------- |
-| **1 Year**  | 6,046   | 0.200       | **56.1%**          | 56.7% | ✅ Yes              |
-| **2 Year**  | 5,936   | **0.286**   | **56.1%**          | 52.4% | ✅ Yes              |
-| **3 Year**  | 5,577   | 0.285       | 53.8%              | 51.2% | ✅ Yes              |
-| **5 Year**  | 4,785   | 0.280       | 52.9%              | 51.4% | ✅ Yes              |
-| **10 Year** | 2,828   | 0.275       | 49.4%              | 52.1% | ✅ Yes              |
+> **Caveat**: The 2010–2020 period was a strong bull market for US tech. Results should be interpreted with this context.
 
-### Quintile Analysis (2-Year Horizon - Best Correlation)
-
-Higher predictions → Higher actual FCF growth (monotonic relationship):
-
-| Quintile      | Predicted Growth | Actual FCF CAGR | Spread vs Q1 |
-| ------------- | ---------------- | --------------- | ------------ |
-| Q1 (Low)      | -65.0%           | 0.7%            | —            |
-| Q2            | -27.9%           | 7.2%            | +6.5%        |
-| Q3            | -6.6%            | 8.6%            | +7.9%        |
-| Q4            | +18.5%           | 13.4%           | +12.7%       |
-| **Q5 (High)** | +127.0%          | **35.7%**       | **+35.0%**   |
-
-### Interpretation
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    MODEL RELIABILITY ASSESSMENT                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ✅ STRENGTHS (Use the model for these purposes)                │
-│  ────────────────────────────────────────────────────────────── │
-│  • Relative ranking: Top quintile consistently outperforms      │
-│  • 1-2 year horizon: Best correlation (r=0.29)                  │
-│  • Direction accuracy > 55% at short horizons                   │
-│  • Monotonic quintile spread: 35% CAGR difference Q5 vs Q1      │
-│                                                                  │
-│  ⚠️ LIMITATIONS (Don't rely on model for these)                 │
-│  ────────────────────────────────────────────────────────────── │
-│  • 10-year predictions: Direction accuracy = 49% (random)       │
-│  • Absolute values: MAE ~50% means point estimates unreliable   │
-│  • Extreme predictions: Model predicts ±100% but actuals ±35%   │
-│                                                                  │
-│  📊 RECOMMENDED USE                                              │
-│  ────────────────────────────────────────────────────────────── │
-│  • Use for RANKING stocks, not absolute valuation               │
-│  • Best for 1-3 year investment horizons                        │
-│  • Combine with GARP (25%) + Risk (25%) for consensus           │
-│  • Focus on quintile selection: Buy Q5, avoid Q1                │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Statistical Significance
-
-All correlations are statistically significant (p < 0.0001), confirming the model captures real signal despite modest correlation values.
+**Backtest data**: `data/processed/backtesting/`, `data/processed/performance_analysis/`  
+**Evaluation scripts**: `scripts/evaluation/backtest_lstm_dcf_10year.py`, `scripts/evaluation/quick_model_test.py`
 
 ---
 
-## 📈 Legacy Backtesting Results
+## Model Evaluation
 
-### Methodology (Historical Reference)
+Evaluation metrics are stored in `data/evaluation/`:
 
-- **Universe**: 78 stocks across 7 sectors
-- **Period**: 2010-2020 (avoid COVID anomaly)
-- **Predictions**: 1,431 stock-year combinations
-- **Benchmark**: S&P 500 (SPY)
-
-### Key Metrics
-
-| Metric               | Result | Interpretation                   |
-| -------------------- | ------ | -------------------------------- |
-| **Spearman ρ**       | -0.007 | Ranking needs improvement        |
-| **Q5-Q1 Spread**     | -16.4% | High upside picks underperformed |
-| **SPY Win Rate**     | 90%    | 9/10 cohorts beat SPY            |
-| **Deployment Ready** | 1/4    | SPY comparison passes            |
-
-### Interpretation
-
-The model shows promise in **broad market outperformance** but needs refinement in **individual stock ranking**. The 90% SPY win rate suggests value in the overall screening methodology.
-
----
-
-## ⚠️ Computational Blindspots
-
-### Hard to Automate (Qualitative Factors)
-
-| Factor              | Why Hard               | Partial Proxy              |
-| ------------------- | ---------------------- | -------------------------- |
-| Management Quality  | Requires reading calls | Insider buying, buybacks   |
-| Competitive Moat    | Subjective durability  | Sustained ROIC > 15%       |
-| Capital Allocation  | M&A judgment           | ROIC trend, FCF conversion |
-| Culture & Execution | Intangible             | (Future: Glassdoor API)    |
-| Regulatory Risk     | Domain-specific        | Sector classification only |
-
-### Data Limitations
-
-| Factor              | Issue        | Mitigation                    |
-| ------------------- | ------------ | ----------------------------- |
-| Forward Estimates   | Analyst bias | Fall back to LSTM prediction  |
-| Small Cap Coverage  | Less data    | Weight historical data higher |
-| Finnhub Rate Limits | 60/min free  | Batch + cache, Stage 2 only   |
-
-> **Thesis Note**: "The system automates quantitative screening but investors should supplement with qualitative due diligence on management, competitive positioning, and industry dynamics."
-
----
-
-## 🛠️ Model Maintenance
-
-### Retraining Schedule
-
-| Task             | Frequency        | Script                                       |
-| ---------------- | ---------------- | -------------------------------------------- |
-| Data collection  | Weekly           | `scripts/quick_start_data_collection.py`     |
-| LSTM retraining  | Quarterly        | `scripts/lstm/train_lstm_dcf_enhanced.py`    |
-| Attention scan   | Weekly           | `scripts/pipeline/weekly_attention_scan.py`  |
-| Qualified update | Daily            | `scripts/pipeline/daily_qualified_update.py` |
-| Backtesting      | After retraining | `scripts/backtest_validator.py`              |
-
-### Model Versioning
-
-Models are stored with timestamps in `models/lstm_checkpoints/`:
-
-- `lstm_dcf_epoch_10_val_loss_0.0001.pth`
-- `lstm_dcf_epoch_20_val_loss_0.00009.pth`
-
----
-
-_Next: [4. Multi-Agent System](./04_MULTIAGENT_SYSTEM.md)_
+| File                           | Contents                       |
+| ------------------------------ | ------------------------------ |
+| `deep_learning_eval.json`      | LSTM-DCF training/test metrics |
+| `traditional_models_eval.json` | Baseline model comparisons     |
