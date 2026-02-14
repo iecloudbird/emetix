@@ -16,7 +16,7 @@ import { ThemeToggle } from "./ThemeToggle";
 const navItems = [
   { href: "/", label: "Top Picks", icon: Trophy },
   { href: "/screener", label: "Stock Screener", icon: Filter },
-  { href: "/profile/risk-assessment", label: "Risk Profile", icon: User },
+  { href: "/risk-assessment", label: "Risk Profile", icon: User },
   { href: "/about", label: "About", icon: Info },
 ];
 

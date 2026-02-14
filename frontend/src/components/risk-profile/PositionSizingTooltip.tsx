@@ -60,7 +60,7 @@ export function PositionSizingTooltip({
             <p className="text-sm">
               Complete your{" "}
               <a
-                href="/profile/risk-assessment"
+                href="/risk-assessment"
                 className="text-primary underline"
               >
                 risk assessment
