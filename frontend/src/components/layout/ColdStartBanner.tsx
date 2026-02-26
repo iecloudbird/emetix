@@ -12,16 +12,18 @@ const MAX_POLL_TIME = 180000; // 3 minutes
  * (Render free tier cold-starts). Auto-dismisses once the API responds.
  */
 export function ColdStartBanner() {
-  const [status, setStatus] = useState<"checking" | "down" | "up" | "dismissed">(
-    () => (process.env.NODE_ENV !== "production" ? "dismissed" : "checking")
-  );
+  const [status, setStatus] = useState<
+    "checking" | "down" | "up" | "dismissed"
+  >(() => (process.env.NODE_ENV !== "production" ? "dismissed" : "checking"));
   const [elapsed, setElapsed] = useState(0);
 
   const checkHealth = useCallback(async () => {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(`${API_URL}/health`, { signal: controller.signal });
+      const res = await fetch(`${API_URL}/health`, {
+        signal: controller.signal,
+      });
       clearTimeout(timeout);
       if (res.ok) return true;
     } catch {
@@ -78,7 +80,9 @@ export function ColdStartBanner() {
       <div className="bg-green-500/10 border-b border-green-500/20 text-green-700 dark:text-green-400">
         <div className="container mx-auto px-4 py-2 flex items-center justify-center gap-2 text-sm">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          <span className="font-medium">Backend is online — you&apos;re all set!</span>
+          <span className="font-medium">
+            Backend is online — you&apos;re all set!
+          </span>
         </div>
       </div>
     );
@@ -96,8 +100,8 @@ export function ColdStartBanner() {
           <div className="text-sm leading-snug">
             <span className="font-semibold">Backend is waking up...</span>{" "}
             <span className="text-amber-700/80 dark:text-amber-400/80">
-              This is a student FYP project hosted on Render&apos;s free tier — the
-              server sleeps when idle and takes ~1-2 min to start.{" "}
+              This is a student FYP project hosted on Render&apos;s free tier —
+              the server sleeps when idle and takes ~1-2 min to start.{" "}
               {elapsed > 0 && (
                 <span className="tabular-nums">({elapsed}s)</span>
               )}

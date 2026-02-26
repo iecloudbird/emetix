@@ -167,16 +167,18 @@ Houses hyperparameters for LSTM-DCF model, consensus scoring weights, and pipeli
 
 See [06 — Frontend Guide](06_FRONTEND_GUIDE.md) for full details.
 
-| Aspect     | Details                                                                   |
-| ---------- | ------------------------------------------------------------------------- |
-| Framework  | Next.js 16.1.1 (App Router)                                               |
-| UI         | React 19.2.3, Tailwind v4, shadcn/ui (Radix primitives)                   |
-| State      | @tanstack/react-query 5.90                                                |
-| Charts     | Recharts 3.6                                                              |
-| Forms      | react-hook-form 7.70 + zod 4.3 validation                                 |
-| API Client | `src/lib/api.ts` — 25 exported functions                                  |
-| Pages      | 6 routes (Home, Screener, Stock Detail, Pipeline, Risk Assessment, About) |
-| Deployment | Vercel (auto-deploys from `frontend/` directory)                          |
+| Aspect     | Details                                                                           |
+| ---------- | --------------------------------------------------------------------------------- |
+| Framework  | Next.js 16.1.1 (App Router)                                                       |
+| UI         | React 19.2.3, Tailwind v4, shadcn/ui (Radix primitives)                           |
+| State      | @tanstack/react-query 5.90                                                        |
+| Charts     | Recharts 3.6                                                                      |
+| Forms      | react-hook-form 7.70 + zod 4.3 validation                                         |
+| API Client | `src/lib/api.ts` — 25+ exported functions                                         |
+| Pages      | 6 routes (Home, Screener, Stock Detail, Pipeline, Risk Assessment, About)         |
+| Caching    | localStorage LLM cache (1–2 hr TTL) + react-query server state                    |
+| UX         | Command palette (Cmd+K), AI preview panel, cold-start banner, risk-profile filter |
+| Deployment | Vercel (auto-deploys from `frontend/` directory)                                  |
 
 ---
 

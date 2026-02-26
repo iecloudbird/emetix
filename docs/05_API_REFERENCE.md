@@ -120,10 +120,30 @@ Response:
 
 AI-powered stock analysis endpoints.
 
-| Method | Path                                 | Description                          |
-| ------ | ------------------------------------ | ------------------------------------ |
-| GET    | `/api/analysis/stock/{ticker}`       | Full AI analysis (uses agent system) |
-| GET    | `/api/analysis/stock/{ticker}/quick` | Quick analysis (lighter computation) |
+| Method | Path                                 | Description                                            |
+| ------ | ------------------------------------ | ------------------------------------------------------ |
+| GET    | `/api/analysis/stock/{ticker}`       | Full AI analysis (LLM-powered deep analysis)           |
+| GET    | `/api/analysis/stock/{ticker}/quick` | Quick analysis (5-pillar scoring + AI headline + desc) |
+
+### Quick Analysis Response
+
+The quick analysis endpoint returns a lightweight summary including an AI-generated headline and a real company description (fetched from Yahoo Finance `longBusinessSummary`, truncated to 2 sentences):
+
+```json
+{
+  "status": "success",
+  "ticker": "AAPL",
+  "summary": {
+    "headline": "Quality tech compounder trading near fair value",
+    "composite_score": 72,
+    "best_pillar": "Quality (85/100)",
+    "classification": "Buy",
+    "one_liner": "Strong fundamentals with moderate margin of safety",
+    "description": "Apple Inc. designs, manufactures, and markets smartphones, PCs, and wearable devices. The company also sells related services."
+  },
+  "source": "live"
+}
+```
 
 ---
 

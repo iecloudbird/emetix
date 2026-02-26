@@ -16,8 +16,27 @@
                                     ┌─────────────────────────┐
                                     │  MongoDB Atlas           │
                                     │  (Cloud Database)        │
+                                    │  7 collections           │
                                     └─────────────────────────┘
 ```
+
+---
+
+## Cold-Start Handling (Free Tier)
+
+Render's free plan sleeps the backend after 15 minutes of inactivity. The first request after sleep takes ~30–90 seconds to boot.
+
+### Frontend Solution: `ColdStartBanner`
+
+The component `frontend/src/components/layout/ColdStartBanner.tsx` handles this gracefully:
+
+1. **Auto-detects** — Polls `GET /health` every 5 seconds on page load (production only)
+2. **Amber banner** — "Backend is waking up..." with live elapsed timer and honest context (student FYP, free hosting)
+3. **Green confirmation** — "Backend is online — you're all set!" shown for 3 seconds when API responds
+4. **Auto-dismiss** — The green banner fades automatically; amber banner has a manual dismiss (×) button
+5. **Max timeout** — Stops polling after 3 minutes to avoid infinite requests
+
+This provides a professional, transparent user experience despite infrastructure constraints.
 
 ---
 
@@ -203,8 +222,9 @@ Tested on RTX 3050 (~6 min training vs ~30–60 min on CPU).
 | ------------------------ | ------------------------------------------------------------------------- |
 | GEMINI API errors        | Verify `GOOGLE_GEMINI_API_KEY` is set; check quota at aistudio.google.com |
 | MongoDB connection fails | Check `MONGODB_URI` format; whitelist IP in Atlas                         |
-| GPU not detected         | CUDA 11.8 required; training falls back to CPU                            |
-| Frontend can't reach API | Verify `NEXT_PUBLIC_API_URL` in `.env.local`                              |
-| Import errors            | Ensure virtual environment is activated (`.\venv\Scripts\Activate.ps1`)   |
+| GPU not detected         | CUDA 11.8 required; training falls back to CPU automatically              |
+| Frontend can't reach API | Verify `NEXT_PUBLIC_API_URL` in `.env.local` or Vercel env vars           |
+| Import errors            | Ensure virtual environment is activated (`.\.venv\Scripts\Activate.ps1`)  |
 | DataFrame ValueError     | Use `.empty` check, never truthiness check on DataFrames                  |
-| Render cold start        | Free plan sleeps after 15 min idle; first request takes ~30s              |
+| Render cold start        | Free plan sleeps after 15 min idle; `ColdStartBanner` handles this in FE  |
+| Vercel build fails       | Ensure Root Directory is set to `frontend` in Vercel dashboard            |
