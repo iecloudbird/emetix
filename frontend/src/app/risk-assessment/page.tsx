@@ -207,15 +207,15 @@ export default function RiskAssessmentPage() {
                     your risk capacity and investment style.
                   </p>
                   <div className="flex gap-4">
-                    <Link href="/" className="flex-1">
+                    <Link href="/screener" className="flex-1">
                       <Button className="w-full">
                         <TrendingUp className="h-4 w-4 mr-2" />
                         View Suitable Stocks
                         <ArrowRight className="h-4 w-4 ml-2" />
                       </Button>
                     </Link>
-                    <Link href="/pipeline">
-                      <Button variant="outline">View Pipeline</Button>
+                    <Link href="/screener">
+                      <Button variant="outline">View Screener</Button>
                     </Link>
                   </div>
                 </div>
@@ -316,13 +316,13 @@ export default function RiskAssessmentPage() {
           </CardHeader>
           <CardContent>
             <div className="flex gap-4">
-              <Link href="/" className="flex-1">
+              <Link href="/screener" className="flex-1">
                 <Button variant="outline" className="w-full">
                   Browse All Stocks
                 </Button>
               </Link>
-              <Link href="/pipeline">
-                <Button variant="outline">View Pipeline</Button>
+              <Link href="/">
+                <Button variant="outline">Top Picks</Button>
               </Link>
             </div>
           </CardContent>

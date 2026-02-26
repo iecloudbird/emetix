@@ -10,9 +10,10 @@
  */
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import { useStock, useCharts } from "@/hooks/use-stocks";
 import { useLocalRiskProfile } from "@/hooks/useRiskProfile";
+import type { Stock } from "@/lib/api";
 import { PriceChart } from "@/components/charts/PriceChart";
 import { ProfileSuitabilityCard } from "@/components/profile/ProfileSuitabilityCard";
 import { AIAnalysisPanel } from "@/components/stocks/AIAnalysisPanel";
@@ -37,6 +38,10 @@ import {
   Shield,
   Target,
   Percent,
+  Activity,
+  PieChart,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -136,7 +141,7 @@ export default function StockPage({ params }: StockPageProps) {
           <div
             className={cn(
               "flex items-center justify-end gap-2 text-lg",
-              isUndervalued ? "text-green-600" : "text-red-600"
+              isUndervalued ? "text-green-600" : "text-red-600",
             )}
           >
             {isUndervalued ? (
@@ -206,6 +211,9 @@ export default function StockPage({ params }: StockPageProps) {
         />
       </div>
 
+      {/* Extended Metrics (Collapsible) */}
+      <ExtendedMetrics stock={stock} />
+
       {/* Profile Suitability Card - Phase 2 */}
       <ProfileSuitabilityCard stock={stock} profile={profile} />
 
@@ -245,6 +253,136 @@ export default function StockPage({ params }: StockPageProps) {
           <MultiAgentAnalysisPanel ticker={stock.ticker} />
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// Extended Metrics - Collapsible section for fundamental details
+function ExtendedMetrics({ stock }: { stock: Stock }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const hasMetrics =
+    stock.roe != null ||
+    stock.roa != null ||
+    stock.profit_margin != null ||
+    stock.gross_margin != null ||
+    stock.debt_equity != null ||
+    stock.fcf_yield != null ||
+    stock.revenue_growth != null ||
+    stock.earnings_growth != null;
+
+  if (!hasMetrics) return null;
+
+  return (
+    <div className="border rounded-lg">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center justify-between w-full px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <Activity className="h-4 w-4" />
+          Fundamental Metrics
+        </span>
+        {expanded ? (
+          <ChevronUp className="h-4 w-4" />
+        ) : (
+          <ChevronDown className="h-4 w-4" />
+        )}
+      </button>
+      {expanded && (
+        <div className="px-4 pb-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            {stock.roe != null && (
+              <MetricCard
+                icon={Activity}
+                label="ROE"
+                value={`${(stock.roe * 100).toFixed(1)}%`}
+                sublabel="Return on Equity"
+                valueColor={stock.roe > 0.15 ? "text-green-600" : undefined}
+              />
+            )}
+            {stock.roa != null && (
+              <MetricCard
+                icon={Activity}
+                label="ROA"
+                value={`${(stock.roa * 100).toFixed(1)}%`}
+                sublabel="Return on Assets"
+                valueColor={stock.roa > 0.05 ? "text-green-600" : undefined}
+              />
+            )}
+            {stock.profit_margin != null && (
+              <MetricCard
+                icon={PieChart}
+                label="Profit Margin"
+                value={`${(stock.profit_margin * 100).toFixed(1)}%`}
+                sublabel="Net Margin"
+                valueColor={
+                  stock.profit_margin > 0.1 ? "text-green-600" : undefined
+                }
+              />
+            )}
+            {stock.gross_margin != null && (
+              <MetricCard
+                icon={PieChart}
+                label="Gross Margin"
+                value={`${(stock.gross_margin * 100).toFixed(1)}%`}
+                sublabel="Gross Profit %"
+                valueColor={
+                  stock.gross_margin > 0.4 ? "text-green-600" : undefined
+                }
+              />
+            )}
+            {stock.debt_equity != null && (
+              <MetricCard
+                icon={Shield}
+                label="Debt/Equity"
+                value={stock.debt_equity.toFixed(2)}
+                sublabel="Leverage"
+                valueColor={
+                  stock.debt_equity < 0.5
+                    ? "text-green-600"
+                    : stock.debt_equity > 2
+                      ? "text-red-600"
+                      : undefined
+                }
+              />
+            )}
+            {stock.fcf_yield != null && (
+              <MetricCard
+                icon={DollarSign}
+                label="FCF Yield"
+                value={`${(stock.fcf_yield * 100).toFixed(1)}%`}
+                sublabel="Free Cash Flow"
+                valueColor={
+                  stock.fcf_yield > 0.05 ? "text-green-600" : undefined
+                }
+              />
+            )}
+            {stock.revenue_growth != null && (
+              <MetricCard
+                icon={TrendingUp}
+                label="Rev Growth"
+                value={`${(stock.revenue_growth * 100).toFixed(1)}%`}
+                sublabel="YoY"
+                valueColor={
+                  stock.revenue_growth > 0 ? "text-green-600" : "text-red-600"
+                }
+              />
+            )}
+            {stock.earnings_growth != null && (
+              <MetricCard
+                icon={TrendingUp}
+                label="Earnings Growth"
+                value={`${(stock.earnings_growth * 100).toFixed(1)}%`}
+                sublabel="YoY"
+                valueColor={
+                  stock.earnings_growth > 0 ? "text-green-600" : "text-red-600"
+                }
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

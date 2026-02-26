@@ -740,6 +740,7 @@ export interface QuickAnalysisResponse {
     best_pillar?: { name: string; score: number };
     classification?: string;
     one_liner: string;
+    description?: string;
   };
   source: "pipeline" | "live";
 }

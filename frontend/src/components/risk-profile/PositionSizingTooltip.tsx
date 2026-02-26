@@ -59,10 +59,7 @@ export function PositionSizingTooltip({
           <TooltipContent side="right" className="max-w-xs">
             <p className="text-sm">
               Complete your{" "}
-              <a
-                href="/risk-assessment"
-                className="text-primary underline"
-              >
+              <a href="/risk-assessment" className="text-primary underline">
                 risk assessment
               </a>{" "}
               to see personalized position sizing.

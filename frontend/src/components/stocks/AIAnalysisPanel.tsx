@@ -8,7 +8,7 @@
  */
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useAIAnalysis, getPillarColor } from "@/hooks/use-pipeline";
 import {
   Card,
@@ -42,6 +42,8 @@ import {
   Shield,
   BarChart3,
   Zap,
+  Clock,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
@@ -53,6 +55,53 @@ import type {
 import { fetchAIAnalysis, type AIAnalysisResponse } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 
+// =============================================================================
+// LOCAL STORAGE CACHE FOR LLM ANALYSIS
+// =============================================================================
+
+const LLM_CACHE_PREFIX = "emetix_llm_analysis_";
+const LLM_CACHE_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+interface CachedLLMAnalysis {
+  data: AIAnalysisResponse;
+  timestamp: number;
+}
+
+function getLLMCacheKey(ticker: string): string {
+  return `${LLM_CACHE_PREFIX}${ticker.toUpperCase()}`;
+}
+
+function getCachedLLMAnalysis(ticker: string): AIAnalysisResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const cached = localStorage.getItem(getLLMCacheKey(ticker));
+    if (!cached) return null;
+    const parsed: CachedLLMAnalysis = JSON.parse(cached);
+    if (Date.now() - parsed.timestamp > LLM_CACHE_DURATION_MS) {
+      localStorage.removeItem(getLLMCacheKey(ticker));
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedLLMAnalysis(ticker: string, data: AIAnalysisResponse): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      getLLMCacheKey(ticker),
+      JSON.stringify({
+        data,
+        timestamp: Date.now(),
+      } satisfies CachedLLMAnalysis),
+    );
+  } catch {
+    // localStorage full — ignore
+  }
+}
+
 interface AIAnalysisPanelProps {
   ticker: string;
   className?: string;
@@ -62,7 +111,17 @@ export function AIAnalysisPanel({ ticker, className }: AIAnalysisPanelProps) {
   const [activeTab, setActiveTab] = useState<
     "ai" | "thesis" | "diagnosis" | "education"
   >("thesis");
-  const [llmEnabled, setLlmEnabled] = useState(false);
+  const initialCache = useMemo(() => getCachedLLMAnalysis(ticker), [ticker]);
+  const [llmEnabled, setLlmEnabled] = useState(initialCache !== null);
+  const [cachedLlm, setCachedLlm] = useState<AIAnalysisResponse | null>(
+    initialCache,
+  );
+
+  // Sync when ticker changes (useMemo recomputes, state follows)
+  if (cachedLlm !== initialCache && initialCache !== null && !llmEnabled) {
+    setCachedLlm(initialCache);
+    setLlmEnabled(true);
+  }
 
   // Rule-based analysis (fast)
   const { data, isLoading, error } = useAIAnalysis(ticker, {
@@ -73,17 +132,31 @@ export function AIAnalysisPanel({ ticker, className }: AIAnalysisPanelProps) {
 
   // LLM analysis (on-demand, slower)
   const {
-    data: llmData,
+    data: llmFetched,
     isLoading: llmLoading,
     refetch: fetchLlm,
   } = useQuery<AIAnalysisResponse>({
     queryKey: ["ai-analysis-llm", ticker],
-    queryFn: () => fetchAIAnalysis(ticker, { useLLM: true }),
+    queryFn: async () => {
+      const result = await fetchAIAnalysis(ticker, { useLLM: true });
+      setCachedLLMAnalysis(ticker, result);
+      setCachedLlm(result);
+      return result;
+    },
     enabled: false, // Only fetch when user clicks
     staleTime: 30 * 60 * 1000, // 30 minutes
   });
 
+  // Use fetched data first, then cache
+  const llmData = llmFetched || cachedLlm;
+
   const handleEnableLLM = () => {
+    // If we already have cached data, just show it
+    if (cachedLlm) {
+      setLlmEnabled(true);
+      setActiveTab("ai");
+      return;
+    }
     setLlmEnabled(true);
     setActiveTab("ai");
     fetchLlm();
@@ -193,7 +266,7 @@ export function AIAnalysisPanel({ ticker, className }: AIAnalysisPanelProps) {
           <TabsList
             className={cn(
               "grid w-full",
-              llmEnabled ? "grid-cols-4" : "grid-cols-3"
+              llmEnabled ? "grid-cols-4" : "grid-cols-3",
             )}
           >
             {llmEnabled && (
@@ -301,8 +374,8 @@ function EducationTab({ education }: { education: EducationSection }) {
                 education.what_is_fair_value.key_insight === "undervalued"
                   ? "border-green-500 text-green-700"
                   : education.what_is_fair_value.key_insight === "overvalued"
-                  ? "border-red-500 text-red-700"
-                  : "border-yellow-500 text-yellow-700"
+                    ? "border-red-500 text-red-700"
+                    : "border-yellow-500 text-yellow-700",
               )}
             >
               {education.what_is_fair_value.key_insight
@@ -335,7 +408,7 @@ function EducationTab({ education }: { education: EducationSection }) {
                       <span
                         className={cn(
                           "font-bold",
-                          getPillarColor(pillar.score)
+                          getPillarColor(pillar.score),
                         )}
                       >
                         {pillar.score.toFixed(0)}
@@ -348,7 +421,7 @@ function EducationTab({ education }: { education: EducationSection }) {
                       Measures: {pillar.what_it_measures}
                     </p>
                   </div>
-                )
+                ),
               )}
             </div>
           </AccordionContent>
@@ -383,12 +456,12 @@ function EducationTab({ education }: { education: EducationSection }) {
                       key.toLowerCase() ===
                         education.classification_explained?.current.toLowerCase()
                         ? "bg-primary/10 border border-primary/20"
-                        : "bg-muted/30"
+                        : "bg-muted/30",
                     )}
                   >
                     <span className="font-medium">{key}:</span> {meaning}
                   </div>
-                )
+                ),
               )}
             </div>
           </AccordionContent>
@@ -443,8 +516,8 @@ function DiagnosisTab({ diagnosis }: { diagnosis: DiagnosisSection }) {
                 diagnosis.overall_assessment.composite_score >= 70
                   ? "text-green-600"
                   : diagnosis.overall_assessment.composite_score >= 50
-                  ? "text-yellow-600"
-                  : "text-red-600"
+                    ? "text-yellow-600"
+                    : "text-red-600",
               )}
             >
               {diagnosis.overall_assessment.composite_score.toFixed(0)}
@@ -460,9 +533,9 @@ function DiagnosisTab({ diagnosis }: { diagnosis: DiagnosisSection }) {
                 diagnosis.overall_assessment.valuation_status === "undervalued"
                   ? "border-green-500 text-green-700"
                   : diagnosis.overall_assessment.valuation_status ===
-                    "overvalued"
-                  ? "border-red-500 text-red-700"
-                  : "border-yellow-500 text-yellow-700"
+                      "overvalued"
+                    ? "border-red-500 text-red-700"
+                    : "border-yellow-500 text-yellow-700",
               )}
             >
               {diagnosis.overall_assessment.margin_of_safety > 0 ? "+" : ""}
@@ -695,8 +768,8 @@ function ThesisTab({ thesis }: { thesis: InvestmentThesisSection }) {
                 thesis.recommendation === "Buy"
                   ? "bg-green-500"
                   : thesis.recommendation === "Hold"
-                  ? "bg-blue-500"
-                  : "bg-yellow-500"
+                    ? "bg-blue-500"
+                    : "bg-yellow-500",
               )}
             >
               {thesis.recommendation}
@@ -799,7 +872,7 @@ function ThesisTab({ thesis }: { thesis: InvestmentThesisSection }) {
 
 // Simple markdown parser for the AI response
 function parseMarkdownToSections(
-  text: string
+  text: string,
 ): { title: string; content: string }[] {
   if (!text) return [];
 
@@ -1045,14 +1118,14 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       parts.push(
         <strong key={key++} className="font-semibold text-foreground">
           {match[2]}
-        </strong>
+        </strong>,
       );
     } else if (match[3]) {
       // *italic*
       parts.push(
         <em key={key++} className="italic">
           {match[3]}
-        </em>
+        </em>,
       );
     } else if (match[4]) {
       // `code`
@@ -1062,7 +1135,7 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
           className="px-1 py-0.5 rounded bg-muted text-xs font-mono"
         >
           {match[4]}
-        </code>
+        </code>,
       );
     }
 
@@ -1227,7 +1300,7 @@ function AISection({
       className={cn(
         "rounded-lg border p-4 transition-all duration-300",
         getSectionStyle(),
-        animate && "animate-in fade-in-0 slide-in-from-bottom-2"
+        animate && "animate-in fade-in-0 slide-in-from-bottom-2",
       )}
       style={{ animationDelay: `${index * 100}ms` }}
     >

@@ -3,6 +3,7 @@
  *
  * Full analysis universe with search, filter, and sorting capabilities.
  * Shows all 500+ qualified stocks from the 3-stage pipeline.
+ * Supports risk-profile filtering via URL params (?maxBeta=X&minMoS=Y).
  */
 "use client";
 
@@ -48,12 +49,15 @@ import {
   RefreshCcw,
   ChevronLeft,
   ChevronRight,
+  Shield,
 } from "lucide-react";
 import {
   ClassificationBadge,
   ScoreBadge,
 } from "@/components/pipeline/PipelineBadges";
 import type { QualifiedStock } from "@/lib/api";
+import { StockPreviewPanel } from "@/components/screener/StockPreviewPanel";
+import { useLocalRiskProfile } from "@/hooks/useRiskProfile";
 
 const ITEMS_PER_PAGE = 25;
 
@@ -74,7 +78,14 @@ export default function ScreenerPage() {
     isLoading,
     error,
     refetch,
+    dataUpdatedAt,
   } = usePipelineClassified();
+
+  // Risk profile from localStorage
+  const { profile: riskProfile } = useLocalRiskProfile();
+  const [profileFilterActive, setProfileFilterActive] = useState(() =>
+    Boolean(riskProfile),
+  );
 
   // Filters
   const [activeTab, setActiveTab] = useState<"all" | "buy" | "hold" | "watch">(
@@ -84,6 +95,7 @@ export default function ScreenerPage() {
   const [sectorFilter, setSectorFilter] = useState<string>("all");
   const [minScore, setMinScore] = useState<number>(0); // Default to 0 (no filter)
   const [currentPage, setCurrentPage] = useState(1);
+  const [previewStock, setPreviewStock] = useState<QualifiedStock | null>(null);
 
   // Combine all stocks for "all" tab
   const allStocks = useMemo(() => {
@@ -128,8 +140,27 @@ export default function ScreenerPage() {
       stocks = stocks.filter((s) => s.composite_score >= minScore);
     }
 
+    // Risk-profile suitability filter from localStorage
+    if (profileFilterActive && riskProfile) {
+      const maxBeta = riskProfile.betaRange?.max;
+      if (maxBeta != null) {
+        stocks = stocks.filter((s) => s.beta == null || s.beta <= maxBeta);
+      }
+      const minMoS = riskProfile.requiredMoS;
+      if (minMoS != null) {
+        stocks = stocks.filter((s) => s.margin_of_safety >= minMoS);
+      }
+    }
+
     return stocks;
-  }, [tabStocks, searchQuery, sectorFilter, minScore]);
+  }, [
+    tabStocks,
+    searchQuery,
+    sectorFilter,
+    minScore,
+    profileFilterActive,
+    riskProfile,
+  ]);
 
   // Pagination
   const totalPages = Math.ceil(filteredStocks.length / ITEMS_PER_PAGE);
@@ -144,6 +175,14 @@ export default function ScreenerPage() {
   }, [activeTab, searchQuery, sectorFilter, minScore]);
 
   const handleStockSelect = (ticker: string) => {
+    router.push(`/stock/${ticker}`);
+  };
+
+  const handleRowClick = (stock: QualifiedStock) => {
+    setPreviewStock(stock);
+  };
+
+  const handleRowDoubleClick = (ticker: string) => {
     router.push(`/stock/${ticker}`);
   };
 
@@ -181,7 +220,9 @@ export default function ScreenerPage() {
           Last updated:{" "}
           {summary?.pipeline?.last_scan?.completed_at
             ? new Date(summary.pipeline.last_scan.completed_at).toLocaleString()
-            : "Never"}
+            : dataUpdatedAt
+              ? new Date(dataUpdatedAt).toLocaleDateString()
+              : "Never"}
         </Badge>
       </div>
 
@@ -247,10 +288,36 @@ export default function ScreenerPage() {
                 className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
               />
             </Button>
+
+            {/* Risk Profile Filter Toggle */}
+            {riskProfile && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={profileFilterActive ? "default" : "outline"}
+                      size="sm"
+                      className={`gap-1.5 shrink-0 ${!profileFilterActive ? "animate-pulse ring-2 ring-primary/30" : ""}`}
+                      onClick={() => setProfileFilterActive((v) => !v)}
+                    >
+                      <Shield className="h-3.5 w-3.5" />
+                      Risk Profile
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    <p className="text-xs">
+                      {profileFilterActive
+                        ? "Showing stocks matched to your risk profile"
+                        : "Filter stocks to match your risk profile"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
           </div>
 
           {/* Results Summary */}
-          <div className="mt-3 flex items-center gap-4 text-sm text-muted-foreground">
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>
               Showing <strong>{filteredStocks.length}</strong> of{" "}
               <strong>{tabStocks.length}</strong> stocks
@@ -265,6 +332,28 @@ export default function ScreenerPage() {
             <span className="text-amber-600">
               Watch: {classified?.classified?.watch?.length || 0}
             </span>
+            {riskProfile && profileFilterActive && (
+              <>
+                <span className="text-muted-foreground/50">|</span>
+                <span className="flex items-center gap-1 text-primary">
+                  <Shield className="h-4 w-4" />
+                  Filtered: Beta ≤ {riskProfile.betaRange?.max?.toFixed(1)} ·
+                  MoS ≥ {riskProfile.requiredMoS?.toFixed(0)}%
+                </span>
+              </>
+            )}
+            {riskProfile && !profileFilterActive && (
+              <>
+                <span className="text-muted-foreground/50">|</span>
+                <span className="text-sm text-muted-foreground/70 italic">
+                  Tip: Enable the{" "}
+                  <strong className="text-primary not-italic">
+                    Risk Profile
+                  </strong>{" "}
+                  filter to match your assessment
+                </span>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -341,154 +430,171 @@ export default function ScreenerPage() {
         </TooltipProvider>
       </div>
 
-      {/* Main Table with Tabs */}
-      <Card>
-        <CardHeader className="pb-2">
-          <Tabs
-            value={activeTab}
-            onValueChange={(v) =>
-              setActiveTab(v as "all" | "buy" | "hold" | "watch")
-            }
-          >
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="all">All ({allStocks.length})</TabsTrigger>
-              <TabsTrigger
-                value="buy"
-                className="data-[state=active]:bg-green-100 dark:data-[state=active]:bg-green-900/30"
-              >
-                Buy ({classified?.classified?.buy?.length || 0})
-              </TabsTrigger>
-              <TabsTrigger
-                value="hold"
-                className="data-[state=active]:bg-blue-100 dark:data-[state=active]:bg-blue-900/30"
-              >
-                Hold ({classified?.classified?.hold?.length || 0})
-              </TabsTrigger>
-              <TabsTrigger
-                value="watch"
-                className="data-[state=active]:bg-amber-100 dark:data-[state=active]:bg-amber-900/30"
-              >
-                Watch ({classified?.classified?.watch?.length || 0})
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-2">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
-          ) : paginatedStocks.length === 0 ? (
-            <div className="flex h-32 items-center justify-center text-muted-foreground">
-              No stocks match your filters
-            </div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[100px]">Ticker</TableHead>
-                      <TableHead>Company</TableHead>
-                      <TableHead>Sector</TableHead>
-                      <TableHead className="text-center">Score</TableHead>
-                      <TableHead className="text-center">Class</TableHead>
-                      <TableHead className="text-right">Price</TableHead>
-                      <TableHead className="text-right">Fair Value</TableHead>
-                      <TableHead className="text-right">MoS</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {paginatedStocks.map((stock) => (
-                      <TableRow
-                        key={stock.ticker}
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => handleStockSelect(stock.ticker)}
-                      >
-                        <TableCell className="font-medium">
-                          {stock.ticker}
-                        </TableCell>
-                        <TableCell>
-                          <div className="max-w-[200px] truncate">
-                            {stock.company_name}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="text-xs">
-                            {stock.sector}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <ScoreBadge score={stock.composite_score} />
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <ClassificationBadge
-                            classification={stock.classification}
-                          />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          ${stock.current_price?.toFixed(2) || "N/A"}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className="text-blue-600 dark:text-blue-400 font-medium">
-                            ${stock.fair_value?.toFixed(2) || "N/A"}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span
-                            className={
-                              (stock.margin_of_safety ?? 0) > 0
-                                ? "text-green-600 dark:text-green-400"
-                                : "text-red-600 dark:text-red-400"
-                            }
-                          >
-                            {stock.margin_of_safety !== null
-                              ? `${stock.margin_of_safety > 0 ? "+" : ""}${stock.margin_of_safety.toFixed(1)}%`
-                              : "N/A"}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+      {/* Main Table with Tabs + Preview Panel */}
+      <div className="flex gap-4">
+        <Card className="flex-1 min-w-0">
+          <CardHeader className="pb-2">
+            <Tabs
+              value={activeTab}
+              onValueChange={(v) =>
+                setActiveTab(v as "all" | "buy" | "hold" | "watch")
+              }
+            >
+              <TabsList className="grid w-full grid-cols-4">
+                <TabsTrigger value="all">All ({allStocks.length})</TabsTrigger>
+                <TabsTrigger
+                  value="buy"
+                  className="data-[state=active]:bg-green-100 dark:data-[state=active]:bg-green-900/30"
+                >
+                  Buy ({classified?.classified?.buy?.length || 0})
+                </TabsTrigger>
+                <TabsTrigger
+                  value="hold"
+                  className="data-[state=active]:bg-blue-100 dark:data-[state=active]:bg-blue-900/30"
+                >
+                  Hold ({classified?.classified?.hold?.length || 0})
+                </TabsTrigger>
+                <TabsTrigger
+                  value="watch"
+                  className="data-[state=active]:bg-amber-100 dark:data-[state=active]:bg-amber-900/30"
+                >
+                  Watch ({classified?.classified?.watch?.length || 0})
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="space-y-2">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Skeleton key={i} className="h-12 w-full" />
+                ))}
               </div>
-
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div className="flex items-center justify-between mt-4 pt-4 border-t">
-                  <div className="text-sm text-muted-foreground">
-                    Page {currentPage} of {totalPages}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setCurrentPage((p) => Math.min(totalPages, p + 1))
-                      }
-                      disabled={currentPage === totalPages}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
+            ) : paginatedStocks.length === 0 ? (
+              <div className="flex h-32 items-center justify-center text-muted-foreground">
+                No stocks match your filters
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[100px]">Ticker</TableHead>
+                        <TableHead>Company</TableHead>
+                        <TableHead>Sector</TableHead>
+                        <TableHead className="text-center">Score</TableHead>
+                        <TableHead className="text-center">Class</TableHead>
+                        <TableHead className="text-right">Price</TableHead>
+                        <TableHead className="text-right">Fair Value</TableHead>
+                        <TableHead className="text-right">MoS</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {paginatedStocks.map((stock) => (
+                        <TableRow
+                          key={stock.ticker}
+                          className={`cursor-pointer hover:bg-muted/50 ${previewStock?.ticker === stock.ticker ? "bg-accent" : ""}`}
+                          onClick={() => handleRowClick(stock)}
+                          onDoubleClick={() =>
+                            handleRowDoubleClick(stock.ticker)
+                          }
+                        >
+                          <TableCell className="font-medium">
+                            {stock.ticker}
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-[200px] truncate">
+                              {stock.company_name}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="text-xs">
+                              {stock.sector}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <ScoreBadge score={stock.composite_score} />
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <ClassificationBadge
+                              classification={stock.classification}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            ${stock.current_price?.toFixed(2) || "N/A"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-blue-600 dark:text-blue-400 font-medium">
+                              ${stock.fair_value?.toFixed(2) || "N/A"}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span
+                              className={
+                                (stock.margin_of_safety ?? 0) > 0
+                                  ? "text-green-600 dark:text-green-400"
+                                  : "text-red-600 dark:text-red-400"
+                              }
+                            >
+                              {stock.margin_of_safety !== null
+                                ? `${stock.margin_of_safety > 0 ? "+" : ""}${stock.margin_of_safety.toFixed(1)}%`
+                                : "N/A"}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                    <div className="text-sm text-muted-foreground">
+                      Page {currentPage} of {totalPages}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setCurrentPage((p) => Math.max(1, p - 1))
+                        }
+                        disabled={currentPage === 1}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setCurrentPage((p) => Math.min(totalPages, p + 1))
+                        }
+                        disabled={currentPage === totalPages}
+                      >
+                        Next
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Preview Panel (right side) */}
+        {previewStock && (
+          <div className="hidden lg:block w-[320px] shrink-0 sticky top-20 self-start">
+            <StockPreviewPanel
+              stock={previewStock}
+              onClose={() => setPreviewStock(null)}
+            />
+          </div>
+        )}
+      </div>
 
       {/* Footer */}
       <div className="text-center text-sm text-muted-foreground pt-8 mt-8 border-t">

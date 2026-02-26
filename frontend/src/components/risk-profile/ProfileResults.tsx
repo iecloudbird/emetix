@@ -225,9 +225,9 @@ export function ProfileResults({ profile }: Props) {
 
       {/* Actions */}
       <div className="flex gap-4">
-        <Link href="/watchlist" className="flex-1">
+        <Link href="/pipeline" className="flex-1">
           <Button className="w-full" size="lg">
-            View Suitable Stocks
+            View Screening Pipeline
             <ArrowRight className="h-4 w-4 ml-2" />
           </Button>
         </Link>
