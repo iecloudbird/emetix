@@ -144,7 +144,7 @@ async def get_qualified_stocks(
 @router.get("/classified")
 async def get_classified_stocks(
     sector: Optional[str] = Query(default=None, description="Filter by sector"),
-    limit_per_class: int = Query(default=20, ge=1, le=50, description="Max stocks per classification")
+    limit_per_class: int = Query(default=100, ge=1, le=500, description="Max stocks per classification")
 ):
     """
     Get stocks organized by Buy/Hold/Watch classification (Stage 3).

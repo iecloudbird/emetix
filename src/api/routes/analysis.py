@@ -173,6 +173,18 @@ async def get_quick_analysis(ticker: str):
         db = get_pipeline_db()
         pipeline_data = db.get_qualified_by_ticker(ticker) if db else None
         
+        # Best-effort company description from yfinance
+        description = None
+        try:
+            import yfinance as yf
+            info = yf.Ticker(ticker).info
+            raw_desc = info.get("longBusinessSummary", "")
+            if raw_desc:
+                sentences = raw_desc.split(". ")
+                description = ". ".join(sentences[:2]).rstrip(".") + "."
+        except Exception:
+            pass
+        
         if not pipeline_data:
             # Fallback to basic fetcher
             from src.data.fetchers import YFinanceFetcher
@@ -181,18 +193,24 @@ async def get_quick_analysis(ticker: str):
             if stock_data is None:
                 raise HTTPException(status_code=404, detail=f"Stock {ticker} not found")
             
+            summary = _generate_quick_summary_from_fetched(stock_data)
+            if description:
+                summary["description"] = description
             return {
                 "status": "success",
                 "ticker": ticker,
-                "summary": _generate_quick_summary_from_fetched(stock_data),
+                "summary": summary,
                 "source": "live"
             }
         
         # Use pipeline data for richer summary
+        summary = _generate_quick_summary(pipeline_data)
+        if description:
+            summary["description"] = description
         return {
             "status": "success",
             "ticker": ticker,
-            "summary": _generate_quick_summary(pipeline_data),
+            "summary": summary,
             "source": "pipeline"
         }
         
