@@ -87,13 +87,13 @@ model.eval()  # Inference mode
 
 ### Pillar Weights (v3.1 — Value-Focused)
 
-| Pillar       | Weight  | Key Components                                               |
-| ------------ | ------- | ------------------------------------------------------------ |
-| **Value**    | **25%** | Margin of Safety (40%), P/E vs Sector (30%), FCF Yield (30%) |
-| **Quality**  | **25%** | FCF ROIC, Profit Margin, ROE, Debt-to-Equity                 |
-| **Growth**   | **20%** | Revenue Growth, Earnings Growth, LSTM Forecast bonus         |
-| **Safety**   | **15%** | Beta, Volatility, Max Drawdown Risk                          |
-| **Momentum** | **15%** | RSI, MA Crossovers, Market-share trend                       |
+| Pillar       | Weight  | Key Components                                                                       |
+| ------------ | ------- | ------------------------------------------------------------------------------------ |
+| **Value**    | **25%** | Margin of Safety (40%), P/E vs Sector (30%), FCF Yield (30%)                         |
+| **Quality**  | **25%** | FCF ROIC, Profit Margin, ROE, Debt-to-Equity                                         |
+| **Growth**   | **20%** | Revenue Growth (30%), Earnings Growth (25%), LSTM Forecast (25%), Revenue CAGR (20%) |
+| **Safety**   | **15%** | Beta, Volatility, Max Drawdown Risk                                                  |
+| **Momentum** | **15%** | RSI, MA Crossovers, Market-share trend                                               |
 
 Each pillar produces a score on a **0–100 scale**. The weighted composite determines stock classification.
 

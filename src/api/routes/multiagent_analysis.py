@@ -25,6 +25,74 @@ router = APIRouter(prefix="/multiagent", tags=["Multi-Agent Analysis"])
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=3)
 
+# =============================================================================
+# ANALYSIS CACHE (reduces Gemini calls — TTL 8 hours)
+# =============================================================================
+CACHE_TTL_HOURS = 8
+
+
+def _get_cache_db():
+    """Get pipeline DB for analysis caching."""
+    try:
+        from src.data.pipeline_db import PipelineDBClient
+        client = PipelineDBClient()
+        if client.connect():
+            return client.db
+    except Exception as e:
+        logger.warning(f"Cache DB unavailable: {e}")
+    return None
+
+
+def _get_cached_analysis(ticker: str, analysis_type: str) -> Optional[Dict]:
+    """Check the analysis_cache collection for a fresh cached result."""
+    db = _get_cache_db()
+    if db is None:
+        return None
+    try:
+        cached = db.analysis_cache.find_one(
+            {"ticker": ticker, "type": analysis_type}
+        )
+        if cached:
+            generated_at = cached.get("generated_at")
+            if generated_at:
+                age_hours = (
+                    datetime.now(timezone.utc) - generated_at
+                ).total_seconds() / 3600
+                if age_hours < CACHE_TTL_HOURS:
+                    logger.info(
+                        f"[{ticker}] Cache hit for {analysis_type} "
+                        f"(age: {age_hours:.1f}h)"
+                    )
+                    result = cached.get("result", {})
+                    result["status"] = "cached"
+                    result.pop("_id", None)
+                    return result
+    except Exception as e:
+        logger.warning(f"Cache read failed for {ticker}: {e}")
+    return None
+
+
+def _save_to_cache(ticker: str, analysis_type: str, result: Dict):
+    """Persist an analysis result into MongoDB analysis_cache."""
+    db = _get_cache_db()
+    if db is None:
+        return
+    try:
+        cache_doc = {
+            "ticker": ticker,
+            "type": analysis_type,
+            "result": result,
+            "generated_at": datetime.now(timezone.utc),
+        }
+        db.analysis_cache.update_one(
+            {"ticker": ticker, "type": analysis_type},
+            {"$set": cache_doc},
+            upsert=True,
+        )
+        logger.info(f"[{ticker}] Cached {analysis_type} result")
+    except Exception as e:
+        logger.warning(f"Cache write failed for {ticker}: {e}")
+
 
 # =============================================================================
 # REAL SCORE COMPUTATION (data-driven, NOT from LLM text)
@@ -352,6 +420,12 @@ async def get_multiagent_analysis(
     ticker = ticker.upper()
     
     try:
+        # Check cache first — avoids Gemini calls for repeated requests
+        cache_type = "multiagent_deep" if deep_analysis else "multiagent"
+        cached = _get_cached_analysis(ticker, cache_type)
+        if cached is not None:
+            return cached
+
         result = {
             "status": "success",
             "ticker": ticker,
@@ -409,11 +483,19 @@ async def get_multiagent_analysis(
                 if ml_result.get("available"):
                     result["agents_used"].append("EnhancedValuationAgent")
             
+            # Fetch insider/institutional holdings data
+            holdings = await _get_holdings_data(ticker)
+            if holdings.get("available"):
+                result["sections"]["holdings"] = holdings
+            
             # Generate synthesis if we have multiple sections
             if len(result["agents_used"]) >= 2:
                 synthesis = await _generate_synthesis(ticker, result["sections"], deep_mode=deep_synthesis)
                 result["sections"]["synthesis"] = synthesis
         
+        # Cache the result for future requests
+        _save_to_cache(ticker, cache_type, result)
+
         return result
         
     except Exception as e:
@@ -772,11 +854,22 @@ async def _generate_synthesis(ticker: str, sections: Dict[str, Any], deep_mode: 
         if not context_parts:
             return {"available": False, "error": "No agent data to synthesize"}
         
-        # Detect contrarian signal
-        is_contrarian = sentiment_score < 0.4 and quality_score > 0.6
+        # Detect contrarian signal using shared utility
+        from src.utils.financial_signals import compute_contrarian_signals
+        contrarian = compute_contrarian_signals(
+            ticker,
+            sentiment_score=sentiment_score,
+            quality_score=quality_score,
+        )
+        is_contrarian = contrarian["is_contrarian"]
         contrarian_note = ""
         if is_contrarian:
-            contrarian_note = "\n\n⚠️ CONTRARIAN SIGNAL DETECTED: Market sentiment is bearish but fundamentals are strong. This could indicate an accumulation opportunity if the negative sentiment is overblown."
+            signal_descs = "; ".join(s["description"] for s in contrarian["signals"])
+            contrarian_note = (
+                f"\n\n⚠️ CONTRARIAN SIGNAL DETECTED: {signal_descs}. "
+                "This could indicate an accumulation opportunity if the "
+                "negative sentiment is overblown."
+            )
         
         if deep_mode:
             # Deep diagnostic reasoning for "Deep Analysis" tab
@@ -840,6 +933,8 @@ Be specific with numbers where available. Avoid generic statements. Do NOT use e
             "agents_combined": list(sections.keys()),
             "deep_mode": deep_mode,
             "contrarian_signal": is_contrarian,
+            "contrarian_details": contrarian.get("signals", []),
+            "wma_200": contrarian.get("wma_200"),
             "scores_summary": {
                 "sentiment": sentiment_score,
                 "quality": quality_score,
@@ -856,6 +951,58 @@ Be specific with numbers where available. Avoid generic statements. Do NOT use e
             "available": False,
             "error": str(e)
         }
+
+
+async def _get_holdings_data(ticker: str) -> Dict[str, Any]:
+    """Fetch insider transactions and institutional holder data."""
+    try:
+        from src.data.fetchers.yfinance_fetcher import YFinanceFetcher
+        fetcher = YFinanceFetcher()
+
+        loop = asyncio.get_event_loop()
+        insider_future = loop.run_in_executor(
+            None, lambda: fetcher.fetch_insider_transactions(ticker)
+        )
+        inst_future = loop.run_in_executor(
+            None, lambda: fetcher.fetch_institutional_holders(ticker)
+        )
+        major_future = loop.run_in_executor(
+            None, lambda: fetcher.fetch_major_holders(ticker)
+        )
+
+        insider, institutional, major = await asyncio.gather(
+            insider_future, inst_future, major_future
+        )
+
+        return {
+            "available": True,
+            "insider_transactions": insider or {},
+            "institutional_holders": institutional or {},
+            "major_holders": major or {},
+        }
+    except Exception as e:
+        logger.warning(f"Holdings data failed for {ticker}: {e}")
+        return {"available": False, "error": str(e)}
+
+
+@router.get("/stock/{ticker}/holdings")
+async def get_holdings_only(ticker: str):
+    """
+    Get insider transactions, institutional holders, and major holder breakdown.
+    Data sourced from Yahoo Finance.
+    """
+    ticker = ticker.upper()
+    try:
+        result = await _get_holdings_data(ticker)
+        return {
+            "status": "success" if result.get("available") else "partial",
+            "ticker": ticker,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "holdings": result,
+        }
+    except Exception as e:
+        logger.error(f"Holdings data error for {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _score_to_label(score: float) -> str:

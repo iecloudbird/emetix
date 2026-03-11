@@ -392,12 +392,25 @@ class PillarScorer:
         """
         GROWTH Pillar (25%)
         
-        Components:
-        - Revenue Growth (40%): Next year estimate or TTM
-        - Earnings Growth (30%): Next year estimate or TTM
-        - LSTM Forecast (30%): ML-predicted growth
+        Components (when CAGR available):
+        - Revenue Growth (30%): Next year estimate or TTM
+        - Earnings Growth (25%): Next year estimate or TTM
+        - LSTM Forecast (25%): ML-predicted growth
+        - Revenue CAGR (20%): 3-year compound annual growth rate
+        
+        Falls back to original 40/30/30 weights when CAGR is unavailable.
         """
         components = {}
+        
+        # Check if CAGR data is available
+        revenue_cagr = data.get('revenue_cagr')  # float percentage or None
+        has_cagr = revenue_cagr is not None
+        
+        # Weights adjust based on CAGR availability
+        rev_w = 0.30 if has_cagr else 0.40
+        earn_w = 0.25 if has_cagr else 0.30
+        lstm_w = 0.25 if has_cagr else 0.30
+        cagr_w = 0.20 if has_cagr else 0.0
         
         # Revenue Growth (0-100)
         # -10% = 0, 0% = 40, 10% = 60, 25%+ = 100
@@ -413,7 +426,7 @@ class PillarScorer:
         components['revenue_growth'] = {
             'value': revenue_growth,
             'score': round(rev_score, 1),
-            'weight': 0.40
+            'weight': rev_w
         }
         
         # Earnings Growth (0-100)
@@ -430,7 +443,7 @@ class PillarScorer:
         components['earnings_growth'] = {
             'value': earnings_growth,
             'score': round(earn_score, 1),
-            'weight': 0.30
+            'weight': earn_w
         }
         
         # LSTM Predicted Growth (0-100)
@@ -447,14 +460,31 @@ class PillarScorer:
         components['lstm_growth'] = {
             'value': lstm_growth,
             'score': round(lstm_score, 1),
-            'weight': 0.30
+            'weight': lstm_w
         }
+        
+        # Revenue CAGR (0-100) — 3-year compound growth
+        # <0% = 0, 0% = 30, 10% = 55, 20% = 80, 30%+ = 100
+        cagr_score = 0.0
+        if has_cagr:
+            if revenue_cagr <= 0:
+                cagr_score = max(0, 30 + revenue_cagr * 3)  # -10% → 0, 0% → 30
+            elif revenue_cagr <= 30:
+                cagr_score = 30 + (revenue_cagr / 30) * 70  # 0% → 30, 30% → 100
+            else:
+                cagr_score = 100
+            components['revenue_cagr'] = {
+                'value': revenue_cagr,
+                'score': round(cagr_score, 1),
+                'weight': cagr_w
+            }
         
         # Calculate weighted pillar score
         pillar_score = (
-            rev_score * 0.40 +
-            earn_score * 0.30 +
-            lstm_score * 0.30
+            rev_score * rev_w +
+            earn_score * earn_w +
+            lstm_score * lstm_w +
+            cagr_score * cagr_w
         )
         
         return PillarScore(

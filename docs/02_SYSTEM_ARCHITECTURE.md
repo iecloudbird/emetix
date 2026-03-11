@@ -86,16 +86,16 @@ The backend is a single FastAPI application (v3.5.0) with 6 routers:
 
 #### Fetchers (`src/data/fetchers/`)
 
-| Fetcher                           | Source                   | API Key Required              |
-| --------------------------------- | ------------------------ | ----------------------------- |
-| `yfinance_fetcher.py`             | Yahoo Finance            | No                            |
-| `finnhub_financials.py`           | Finnhub                  | Yes (`FINNHUB_API_KEY`)       |
-| `alpha_vantage_financials.py`     | Alpha Vantage            | Yes (`ALPHA_VANTAGE_API_KEY`) |
-| `news_sentiment_fetcher.py`       | Yahoo Finance + NewsAPI  | Optional (`NEWS_API_KEY`)     |
-| `technical_sentiment_fetcher.py`  | Computed from price data | No                            |
-| `ticker_universe.py`              | Static US universe       | No                            |
-| `unified_financials_fetcher.py`   | Multi-source aggregator  | Depends                       |
-| `financial_statements_fetcher.py` | Financial statements     | Depends                       |
+| Fetcher                           | Source                                                      | API Key Required              |
+| --------------------------------- | ----------------------------------------------------------- | ----------------------------- |
+| `yfinance_fetcher.py`             | Yahoo Finance (price, fundamentals, insider, institutional) | No                            |
+| `finnhub_financials.py`           | Finnhub                                                     | Yes (`FINNHUB_API_KEY`)       |
+| `alpha_vantage_financials.py`     | Alpha Vantage                                               | Yes (`ALPHA_VANTAGE_API_KEY`) |
+| `news_sentiment_fetcher.py`       | Yahoo Finance + NewsAPI                                     | Optional (`NEWS_API_KEY`)     |
+| `technical_sentiment_fetcher.py`  | Computed from price data                                    | No                            |
+| `ticker_universe.py`              | Static US universe                                          | No                            |
+| `unified_financials_fetcher.py`   | Multi-source aggregator                                     | Depends                       |
+| `financial_statements_fetcher.py` | Financial statements                                        | Depends                       |
 
 All fetchers return `None` on failure — they never raise exceptions.
 
@@ -110,7 +110,18 @@ All fetchers return `None` on failure — they never raise exceptions.
 
 - **Connection**: MongoDB Atlas via `MONGODB_URI` environment variable
 - **Database**: `emetix_pipeline` (configurable)
-- **Collections**: `universe_stocks`, `attention_stocks`, `qualified_stocks`, `classified_stocks`, `curated_watchlist`, `watchlists`, `strategies`
+- **Collections**: `universe_stocks`, `attention_stocks`, `qualified_stocks`, `classified_stocks`, `curated_watchlist`, `watchlists`, `strategies`, `analysis_cache`
+- **Indexes**: Pipeline collections have `ticker` (unique) indexes. `analysis_cache` has compound `(ticker, type)` unique index for fast cache lookups.
+- **Analysis Cache**: Multi-agent analysis results cached for 8 hours to minimise Gemini API calls. Stored in `analysis_cache` collection with TTL staleness check.
+
+---
+
+## Shared Utilities (`src/utils/`)
+
+| Module                 | Purpose                                           |
+| ---------------------- | ------------------------------------------------- |
+| `llm_provider.py`      | Centralised LLM access (`get_llm(model_tier)`)    |
+| `financial_signals.py` | Revenue CAGR, 200WMA signal, contrarian detection |
 
 ---
 

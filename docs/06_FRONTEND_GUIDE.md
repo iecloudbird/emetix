@@ -159,13 +159,14 @@ The backend is hosted on Render's free tier, which sleeps after 15 minutes of in
 
 **Page**: `app/stock/[ticker]/page.tsx`
 
-| Tab / Section        | Description                                      |
-| -------------------- | ------------------------------------------------ |
-| Overview             | Price, key metrics, classification badge         |
-| Charts               | Interactive Recharts price/volume visualisation  |
-| Fundamentals         | Detailed metrics with collapsible extended view  |
-| AI Analysis          | Gemini-powered deep analysis (cached 2 hrs)      |
-| Multi-Agent Analysis | Full 8-agent orchestrated analysis (cached 1 hr) |
+| Tab / Section        | Description                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| Overview             | Price, key metrics, classification badge                                                     |
+| Charts               | Interactive Recharts price/volume visualisation                                              |
+| Financials           | Analyst-style infographic (revenue bars, margins, multiple compression, beat-down detection) |
+| Fundamentals         | Detailed metrics with collapsible extended view                                              |
+| AI Analysis          | Gemini-powered deep analysis (cached 2 hrs)                                                  |
+| Multi-Agent Analysis | Full 8-agent orchestrated analysis (cached 1 hr)                                             |
 
 ### 8. Mobile Responsive Navigation
 

@@ -15,6 +15,7 @@ import { useStock, useCharts } from "@/hooks/use-stocks";
 import { useLocalRiskProfile } from "@/hooks/useRiskProfile";
 import type { Stock } from "@/lib/api";
 import { PriceChart } from "@/components/charts/PriceChart";
+import { StockInfographic } from "@/components/charts/StockInfographic";
 import { ProfileSuitabilityCard } from "@/components/profile/ProfileSuitabilityCard";
 import { AIAnalysisPanel } from "@/components/stocks/AIAnalysisPanel";
 import { MultiAgentAnalysisPanel } from "@/components/stocks/MultiAgentAnalysisPanel";
@@ -221,6 +222,7 @@ export default function StockPage({ params }: StockPageProps) {
       <Tabs defaultValue="chart" className="space-y-4">
         <TabsList>
           <TabsTrigger value="chart">Price Chart</TabsTrigger>
+          <TabsTrigger value="financials">Financials</TabsTrigger>
           <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
           <TabsTrigger value="deep">Deep Analysis</TabsTrigger>
         </TabsList>
@@ -243,6 +245,10 @@ export default function StockPage({ params }: StockPageProps) {
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="financials">
+          <StockInfographic ticker={stock.ticker} />
         </TabsContent>
 
         <TabsContent value="analysis">

@@ -26,21 +26,23 @@
 
 Stock lookup, charts, sector data, and agent-powered analysis.
 
-| Method | Path                         | Description                                      |
-| ------ | ---------------------------- | ------------------------------------------------ |
-| GET    | `/api/stock/{ticker}`        | Full stock data (price, fundamentals, valuation) |
-| GET    | `/api/charts/{ticker}`       | Historical price/volume chart data               |
-| GET    | `/api/sectors`               | All sector summaries                             |
-| GET    | `/api/sectors/{sector}`      | Stocks within a specific sector                  |
-| GET    | `/api/compare`               | Compare multiple stocks (`?tickers=AAPL,MSFT`)   |
-| GET    | `/api/summary`               | Market summary and overview                      |
-| GET    | `/api/methodology`           | Scoring methodology explanation                  |
-| GET    | `/api/education/{ticker}`    | Educational content for a stock                  |
-| GET    | `/api/models/status`         | ML model availability status                     |
-| POST   | `/api/agent/analyze`         | Trigger AI agent stock analysis                  |
-| POST   | `/api/agent/build-watchlist` | Trigger AI watchlist builder                     |
-| GET    | `/api/agent/status`          | Agent processing status                          |
-| GET    | `/api/universe/info`         | Ticker universe metadata (~5,800 stocks)         |
+| Method | Path                         | Description                                       |
+| ------ | ---------------------------- | ------------------------------------------------- |
+| GET    | `/api/stock/{ticker}`        | Full stock data (price, fundamentals, valuation)  |
+| GET    | `/api/charts/{ticker}`       | Historical price/volume chart data                |
+| GET    | `/api/sectors`               | All sector summaries                              |
+| GET    | `/api/sectors/{sector}`      | Stocks within a specific sector                   |
+| GET    | `/api/compare`               | Compare multiple stocks (`?tickers=AAPL,MSFT`)    |
+| GET    | `/api/summary`               | Market summary and overview                       |
+| GET    | `/api/methodology`           | Scoring methodology explanation                   |
+| GET    | `/api/education/{ticker}`    | Educational content for a stock                   |
+| GET    | `/api/models/status`         | ML model availability status                      |
+| POST   | `/api/agent/analyze`         | Trigger AI agent stock analysis                   |
+| POST   | `/api/agent/build-watchlist` | Trigger AI watchlist builder                      |
+| GET    | `/api/agent/status`          | Agent processing status                           |
+| GET    | `/api/universe/info`         | Ticker universe metadata (~5,800 stocks)          |
+| GET    | `/api/infographic/{ticker}`  | Structured data for visual stock infographic card |
+| GET    | `/api/beat-down-scan`        | Scan stocks for beat-down opportunities           |
 
 ### Example — Fetch Stock Data
 
@@ -151,13 +153,14 @@ The quick analysis endpoint returns a lightweight summary including an AI-genera
 
 Full multi-agent orchestration endpoints.
 
-| Method | Path                                          | Description                           |
-| ------ | --------------------------------------------- | ------------------------------------- |
-| GET    | `/api/multiagent/stock/{ticker}`              | Complete multi-agent analysis         |
-| GET    | `/api/multiagent/stock/{ticker}/sentiment`    | Sentiment analysis only               |
-| GET    | `/api/multiagent/stock/{ticker}/fundamentals` | Fundamentals analysis only            |
-| GET    | `/api/multiagent/stock/{ticker}/ml-valuation` | LSTM-DCF + consensus only             |
-| POST   | `/api/multiagent/watchlist/analyze`           | Analyse multiple stocks for watchlist |
+| Method | Path                                          | Description                                  |
+| ------ | --------------------------------------------- | -------------------------------------------- |
+| GET    | `/api/multiagent/stock/{ticker}`              | Complete multi-agent analysis                |
+| GET    | `/api/multiagent/stock/{ticker}/sentiment`    | Sentiment analysis only                      |
+| GET    | `/api/multiagent/stock/{ticker}/fundamentals` | Fundamentals analysis only                   |
+| GET    | `/api/multiagent/stock/{ticker}/ml-valuation` | LSTM-DCF + consensus only                    |
+| POST   | `/api/multiagent/watchlist/analyze`           | Analyse multiple stocks for watchlist        |
+| GET    | `/api/multiagent/stock/{ticker}/holdings`     | Insider transactions & institutional holders |
 
 ### Example — Multi-Agent Analysis
 
@@ -267,6 +270,19 @@ All endpoints return consistent error responses:
 | ------- | ------------------- |
 | Default | 100 requests/hour   |
 | Premium | 1,000 requests/hour |
+
+---
+
+## Automated Pipeline (GitHub Actions)
+
+The pipeline runs on a cron schedule via `.github/workflows/pipeline_scan.yml`:
+
+| Schedule            | Stage   | Description                 |
+| ------------------- | ------- | --------------------------- |
+| 1st of month 06 UTC | Stage 1 | Full universe scan (~5,800) |
+| Monday 06 UTC       | Stage 2 | Qualified stock update      |
+| Weekdays 06 UTC     | Stage 3 | Watchlist curation          |
+| Manual dispatch     | Any     | Run any stage on-demand     |
 
 ---
 

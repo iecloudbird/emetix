@@ -85,6 +85,9 @@ class PipelineDBClient:
             self._connected = True
             logger.info(f"Connected to MongoDB Atlas: {PIPELINE_DATABASE}")
             
+            # Ensure indexes for pipeline collections
+            self._create_indexes()
+            
             return True
             
         except Exception as e:
@@ -92,6 +95,26 @@ class PipelineDBClient:
             self._connected = False
             return False
     
+    def _create_indexes(self):
+        """Create necessary indexes for pipeline collections"""
+        try:
+            self._db.attention_stocks.create_index("ticker", unique=True)
+            self._db.qualified_stocks.create_index("ticker", unique=True)
+            self._db.us_stocks.create_index("ticker", unique=True)
+            self._db.qualified_stocks.create_index("composite_score")
+            self._db.qualified_stocks.create_index("classification")
+            self._db.attention_stocks.create_index("status")
+            self._db.scan_history.create_index("started_at")
+            self._db.analysis_cache.create_index("ticker")
+            self._db.analysis_cache.create_index("generated_at")
+            self._db.analysis_cache.create_index(
+                [("ticker", 1), ("type", 1)],
+                unique=True
+            )
+            logger.info("Pipeline indexes ensured")
+        except Exception as e:
+            logger.warning(f"Failed to create pipeline indexes: {e}")
+
     @property
     def db(self) -> Optional[Database]:
         """Get database, connecting if needed"""

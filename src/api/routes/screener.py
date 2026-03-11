@@ -785,3 +785,352 @@ async def get_universe_info():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# STOCK INFOGRAPHIC DATA (for visual summary cards)
+# ============================================================================
+
+@router.get("/infographic/{ticker}")
+async def get_stock_infographic(ticker: str):
+    """
+    Return structured data for analyst-style stock infographic cards.
+
+    Includes: company overview, annual + quarterly revenue with CAGR,
+    net income, EPS trend, margin trends, valuation multiple compression,
+    stock performance, beat-down detection, and major holder breakdown.
+    All data sourced from Yahoo Finance — no LLM calls.
+    """
+    import yfinance as yf
+    import numpy as np
+
+    ticker = ticker.upper()
+
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        # ----- Company overview -----
+        overview = {
+            "ticker": ticker,
+            "name": info.get("shortName") or info.get("longName", ticker),
+            "sector": info.get("sector", "N/A"),
+            "industry": info.get("industry", "N/A"),
+            "market_cap": info.get("marketCap"),
+            "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+            "currency": info.get("currency", "USD"),
+            "exchange": info.get("exchange", ""),
+        }
+
+        # ----- Annual revenue + CAGR (bar chart data) -----
+        annual_revenue = []
+        try:
+            inc_annual = stock.income_stmt
+            if inc_annual is not None and not inc_annual.empty:
+                for col in reversed(list(inc_annual.columns)[:7]):
+                    try:
+                        year_label = str(col.year) if hasattr(col, "year") else str(col)[:4]
+                    except Exception:
+                        year_label = str(col)
+                    rev = inc_annual.at["Total Revenue", col] if "Total Revenue" in inc_annual.index else None
+                    if rev is not None and not (isinstance(rev, float) and np.isnan(rev)):
+                        annual_revenue.append({"year": year_label, "revenue": float(rev)})
+            # Add YoY growth %
+            for i in range(1, len(annual_revenue)):
+                prev = annual_revenue[i - 1]["revenue"]
+                if prev and prev != 0:
+                    annual_revenue[i]["yoy_growth"] = round(
+                        (annual_revenue[i]["revenue"] - prev) / abs(prev) * 100, 1
+                    )
+        except Exception as e:
+            logger.warning(f"[{ticker}] Annual revenue error: {e}")
+
+        # Revenue CAGR (reuse shared utility)
+        revenue_cagr = None
+        try:
+            from src.utils.financial_signals import calculate_revenue_cagr
+            revenue_cagr = calculate_revenue_cagr(ticker, years=5)
+        except Exception:
+            pass
+
+        # ----- Quarterly financials -----
+        quarterly_revenue = []
+        quarterly_net_income = []
+        margin_trends = []
+
+        try:
+            inc = stock.quarterly_income_stmt
+            if inc is not None and not inc.empty:
+                for col in reversed(list(inc.columns)[:8]):
+                    try:
+                        period = f"{col.year}-Q{(col.month - 1) // 3 + 1}"
+                    except Exception:
+                        period = str(col)
+
+                    rev = inc.at["Total Revenue", col] if "Total Revenue" in inc.index else None
+                    ni = inc.at["Net Income", col] if "Net Income" in inc.index else None
+                    gp = inc.at["Gross Profit", col] if "Gross Profit" in inc.index else None
+                    op_inc = inc.at["Operating Income", col] if "Operating Income" in inc.index else None
+
+                    if rev is not None and not (isinstance(rev, float) and np.isnan(rev)):
+                        entry = {"period": period, "revenue": float(rev)}
+                        quarterly_revenue.append(entry)
+                    if ni is not None and not (isinstance(ni, float) and np.isnan(ni)):
+                        quarterly_net_income.append({"period": period, "net_income": float(ni)})
+                    if rev and float(rev) != 0:
+                        margins = {"period": period}
+                        if op_inc and not (isinstance(op_inc, float) and np.isnan(op_inc)):
+                            margins["operating_margin"] = round(float(op_inc) / float(rev) * 100, 2)
+                        if gp and not (isinstance(gp, float) and np.isnan(gp)):
+                            margins["gross_margin"] = round(float(gp) / float(rev) * 100, 2)
+                        if ni and not (isinstance(ni, float) and np.isnan(ni)):
+                            margins["net_margin"] = round(float(ni) / float(rev) * 100, 2)
+                        margin_trends.append(margins)
+        except Exception as e:
+            logger.warning(f"[{ticker}] Quarterly financials error: {e}")
+
+        # YoY revenue growth for quarterly entries
+        for i, entry in enumerate(quarterly_revenue):
+            if i >= 4 and quarterly_revenue[i - 4]["revenue"]:
+                prev = quarterly_revenue[i - 4]["revenue"]
+                entry["yoy_growth"] = round((entry["revenue"] - prev) / abs(prev) * 100, 2)
+
+        # ----- EPS trend -----
+        eps_trend = []
+        try:
+            if info.get("trailingEps") is not None:
+                eps_trend.append({"label": "Trailing EPS", "value": info["trailingEps"]})
+            if info.get("forwardEps") is not None:
+                eps_trend.append({"label": "Forward EPS", "value": info["forwardEps"]})
+        except Exception:
+            pass
+
+        # ----- Valuation multiples + compression -----
+        multiples = {}
+        try:
+            ps = info.get("priceToSalesTrailing12Months")
+            pe = info.get("trailingPE")
+            pb = info.get("priceToBook")
+            pfcf = info.get("priceToFreeCashflows") if "priceToFreeCashflows" in info else None
+            ev_rev = info.get("enterpriseToRevenue")
+            ev_ebitda = info.get("enterpriseToEbitda")
+
+            if ps is not None:
+                multiples["ps"] = {"current": round(ps, 2), "label": "P/S"}
+            if pe is not None and pe > 0:
+                multiples["pe"] = {"current": round(pe, 2), "label": "P/E"}
+            if pb is not None and pb > 0:
+                multiples["pb"] = {"current": round(pb, 2), "label": "P/B"}
+            if pfcf is not None and pfcf > 0:
+                multiples["pfcf"] = {"current": round(pfcf, 2), "label": "P/FCF"}
+            if ev_rev is not None and ev_rev > 0:
+                multiples["ev_rev"] = {"current": round(ev_rev, 2), "label": "EV/Rev"}
+            if ev_ebitda is not None and ev_ebitda > 0:
+                multiples["ev_ebitda"] = {"current": round(ev_ebitda, 2), "label": "EV/EBITDA"}
+
+            # Estimate peak multiples from 52-week high ratio
+            price_52h = info.get("fiftyTwoWeekHigh")
+            price_now = overview["current_price"]
+            if price_52h and price_now and price_now > 0:
+                peak_ratio = price_52h / price_now
+                for key in multiples:
+                    multiples[key]["peak_est"] = round(multiples[key]["current"] * peak_ratio, 2)
+                    curr = multiples[key]["current"]
+                    peak = multiples[key]["peak_est"]
+                    if peak > 0:
+                        multiples[key]["compression_pct"] = round((peak - curr) / peak * 100, 1)
+        except Exception as e:
+            logger.warning(f"[{ticker}] Multiples error: {e}")
+
+        # ----- Stock performance -----
+        performance = {}
+        try:
+            hist = stock.history(period="1y")
+            if not hist.empty and len(hist) >= 2:
+                close = hist["Close"]
+                current = float(close.iloc[-1])
+                n = len(close)
+                performance["1d"] = round((current - float(close.iloc[-2])) / float(close.iloc[-2]) * 100, 2) if n >= 2 else None
+                performance["1w"] = round((current - float(close.iloc[-min(5, n)])) / float(close.iloc[-min(5, n)]) * 100, 2) if n >= 5 else None
+                performance["1m"] = round((current - float(close.iloc[-min(22, n)])) / float(close.iloc[-min(22, n)]) * 100, 2) if n >= 22 else None
+                performance["3m"] = round((current - float(close.iloc[-min(63, n)])) / float(close.iloc[-min(63, n)]) * 100, 2) if n >= 63 else None
+                performance["6m"] = round((current - float(close.iloc[-min(126, n)])) / float(close.iloc[-min(126, n)]) * 100, 2) if n >= 126 else None
+                performance["1y"] = round((current - float(close.iloc[0])) / float(close.iloc[0]) * 100, 2)
+                performance["52w_high"] = float(close.max())
+                performance["52w_low"] = float(close.min())
+                performance["pct_from_52w_high"] = round((current - performance["52w_high"]) / performance["52w_high"] * 100, 1)
+        except Exception as e:
+            logger.warning(f"[{ticker}] Performance calc error: {e}")
+
+        # ----- Beat-down detection -----
+        beat_down = {"is_beat_down": False, "signals": []}
+        try:
+            pct_from_high = performance.get("pct_from_52w_high", 0)
+            gross_margin = info.get("grossMargins", 0) or 0
+            cagr_val = revenue_cagr["cagr"] if revenue_cagr else 0
+
+            if pct_from_high <= -15:
+                beat_down["signals"].append(f"Down {abs(pct_from_high):.0f}% from 52-week high")
+            if cagr_val >= 15:
+                beat_down["signals"].append(f"Revenue CAGR {cagr_val:.0f}% (strong growth)")
+            if gross_margin >= 0.50:
+                beat_down["signals"].append(f"Gross margin {gross_margin * 100:.0f}% (scalable)")
+
+            # Check multiple compression
+            avg_compression = 0
+            comp_count = 0
+            for m in multiples.values():
+                if "compression_pct" in m and m["compression_pct"] > 0:
+                    avg_compression += m["compression_pct"]
+                    comp_count += 1
+            if comp_count > 0:
+                avg_compression /= comp_count
+                if avg_compression >= 20:
+                    beat_down["signals"].append(f"Avg multiple compression {avg_compression:.0f}%")
+
+            # Beat-down = price dropped significantly + business still strong
+            if (pct_from_high <= -15 and
+                (cagr_val >= 15 or gross_margin >= 0.50) and
+                len(beat_down["signals"]) >= 3):
+                beat_down["is_beat_down"] = True
+        except Exception:
+            pass
+
+        # ----- Major holders breakdown -----
+        holders = {}
+        try:
+            from src.data.fetchers.yfinance_fetcher import YFinanceFetcher
+            fetcher = YFinanceFetcher()
+            major = fetcher.fetch_major_holders(ticker)
+            if major:
+                holders = major.get("breakdown", {})
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "ticker": ticker,
+            "generated_at": datetime.now().isoformat(),
+            "overview": overview,
+            "annual_revenue": annual_revenue,
+            "revenue_cagr": revenue_cagr,
+            "quarterly_revenue": quarterly_revenue,
+            "quarterly_net_income": quarterly_net_income,
+            "eps_trend": eps_trend,
+            "margin_trends": margin_trends,
+            "multiples": multiples,
+            "performance": performance,
+            "beat_down": beat_down,
+            "major_holders": holders,
+        }
+
+    except Exception as e:
+        logger.error(f"Infographic data error for {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# BEAT-DOWN SCANNER
+# ============================================================================
+
+@router.get("/beat-down-scan")
+async def beat_down_scan(
+    tickers: str = Query(
+        default="",
+        description="Comma-separated tickers to scan. If empty, scans curated universe.",
+    ),
+    limit: int = Query(default=20, ge=1, le=100, description="Max results"),
+):
+    """
+    Scan stocks for beat-down opportunities — growth stocks with
+    significant price drops but strong underlying fundamentals.
+
+    Criteria:
+    - Price >= 15% below 52-week high
+    - Revenue CAGR >= 15% or Gross margin >= 50%
+    - Multiple compression >= 20% from peak
+
+    Returns ranked list of beat-down candidates.
+    """
+    import yfinance as yf
+
+    # Determine ticker list
+    if tickers.strip():
+        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    else:
+        # Use curated universe subset
+        try:
+            from src.analysis.stock_screener import StockScreener
+            ticker_list = (StockScreener.SP500_TICKERS + StockScreener.EXTENDED_TICKERS)[:200]
+        except Exception:
+            raise HTTPException(status_code=500, detail="Cannot load ticker universe")
+
+    results = []
+
+    for ticker in ticker_list:
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            high_52 = info.get("fiftyTwoWeekHigh")
+            if not price or not high_52 or high_52 <= 0:
+                continue
+
+            pct_from_high = (price - high_52) / high_52 * 100
+            if pct_from_high > -15:
+                continue  # Not beat-down enough
+
+            gross_margin = info.get("grossMargins", 0) or 0
+            rev_growth = info.get("revenueGrowth", 0) or 0
+
+            # Quick CAGR from available data
+            cagr = None
+            try:
+                from src.utils.financial_signals import calculate_revenue_cagr
+                cagr_data = calculate_revenue_cagr(ticker, years=3)
+                if cagr_data:
+                    cagr = cagr_data["cagr"]
+            except Exception:
+                pass
+
+            # Must have strong business
+            if not (gross_margin >= 0.50 or (cagr and cagr >= 15) or rev_growth >= 0.15):
+                continue
+
+            signals = []
+            if pct_from_high <= -15:
+                signals.append(f"Down {abs(pct_from_high):.0f}% from 52W high")
+            if cagr and cagr >= 15:
+                signals.append(f"CAGR {cagr:.0f}%")
+            if gross_margin >= 0.50:
+                signals.append(f"Gross margin {gross_margin * 100:.0f}%")
+            if rev_growth >= 0.15:
+                signals.append(f"Rev growth {rev_growth * 100:.0f}%")
+
+            results.append({
+                "ticker": ticker,
+                "name": info.get("shortName", ticker),
+                "sector": info.get("sector", ""),
+                "current_price": round(price, 2),
+                "pct_from_52w_high": round(pct_from_high, 1),
+                "gross_margin": round(gross_margin * 100, 1) if gross_margin else None,
+                "revenue_cagr": cagr,
+                "revenue_growth": round(rev_growth * 100, 1) if rev_growth else None,
+                "signals": signals,
+                "signal_count": len(signals),
+            })
+        except Exception as e:
+            logger.debug(f"Beat-down scan skip {ticker}: {e}")
+            continue
+
+    # Sort by signal strength (most signals first, then biggest drop)
+    results.sort(key=lambda x: (-x["signal_count"], x["pct_from_52w_high"]))
+
+    return {
+        "status": "success",
+        "generated_at": datetime.now().isoformat(),
+        "scanned": len(ticker_list),
+        "found": len(results[:limit]),
+        "beat_down_stocks": results[:limit],
+    }

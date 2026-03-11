@@ -16,8 +16,13 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from fastapi import FastAPI
+import time
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+req_logger = logging.getLogger("emetix.requests")
 from src.api.routes.screener import router as screener_router
 from src.api.routes.risk_profile import router as risk_profile_router
 from src.api.routes.storage import router as storage_router
@@ -79,6 +84,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all API requests with timing for monitoring."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    req_logger.info(
+        f"{request.method} {request.url.path} → {response.status_code} ({duration_ms:.0f}ms)"
+    )
+    return response
 
 # Include routers
 app.include_router(screener_router, prefix="/api", tags=["Stock Screener"])

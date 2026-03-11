@@ -631,6 +631,15 @@ class StockScreener:
         except Exception:
             return default
     
+    def _get_revenue_cagr(self, ticker: str) -> Optional[float]:
+        """Get 3-year revenue CAGR using the shared financial_signals utility."""
+        try:
+            from src.utils.financial_signals import calculate_revenue_cagr
+            result = calculate_revenue_cagr(ticker, years=3)
+            return result["cagr"] if result else None
+        except Exception:
+            return None
+
     def _calculate_traditional_fair_value(self, data: Dict) -> float:
         """Calculate traditional DCF fair value using P/E and P/B multiples"""
         current_price = data['current_price']
@@ -890,6 +899,7 @@ class StockScreener:
                 # Growth
                 'revenue_growth': (info.get('revenueGrowth', 0) or 0) * 100,
                 'earnings_growth': (info.get('earningsGrowth', 0) or 0) * 100,
+                'revenue_cagr': self._get_revenue_cagr(ticker),
                 
                 # Cash flow
                 'free_cash_flow': info.get('freeCashflow', 0) or 0,

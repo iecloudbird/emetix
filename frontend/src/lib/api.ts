@@ -934,3 +934,87 @@ export async function fetchMLValuationAnalysis(ticker: string): Promise<{
     throw new Error(`Failed to fetch ML valuation analysis: ${res.status}`);
   return res.json();
 }
+
+// ============================================================================
+// STOCK INFOGRAPHIC (visual analyst-style data)
+// ============================================================================
+
+export interface InfographicOverview {
+  ticker: string;
+  name: string;
+  sector: string;
+  industry: string;
+  market_cap: number | null;
+  current_price: number | null;
+  currency: string;
+  exchange: string;
+}
+
+export interface AnnualRevenueEntry {
+  year: string;
+  revenue: number;
+  yoy_growth?: number;
+}
+
+export interface QuarterlyRevenueEntry {
+  period: string;
+  revenue: number;
+  yoy_growth?: number;
+}
+
+export interface QuarterlyNetIncomeEntry {
+  period: string;
+  net_income: number;
+}
+
+export interface MarginTrendEntry {
+  period: string;
+  operating_margin?: number;
+  gross_margin?: number;
+  net_margin?: number;
+}
+
+export interface MultipleData {
+  current: number;
+  peak_est?: number;
+  compression_pct?: number;
+  label: string;
+}
+
+export interface BeatDownSignal {
+  is_beat_down: boolean;
+  signals: string[];
+}
+
+export interface InfographicResponse {
+  status: string;
+  ticker: string;
+  generated_at: string;
+  overview: InfographicOverview;
+  annual_revenue: AnnualRevenueEntry[];
+  revenue_cagr: {
+    cagr: number;
+    years: number;
+    latest_revenue: number;
+    oldest_revenue: number;
+  } | null;
+  quarterly_revenue: QuarterlyRevenueEntry[];
+  quarterly_net_income: QuarterlyNetIncomeEntry[];
+  eps_trend: { label: string; value: number }[];
+  margin_trends: MarginTrendEntry[];
+  multiples: Record<string, MultipleData>;
+  performance: Record<string, number | null>;
+  beat_down: BeatDownSignal;
+  major_holders: Record<string, string | number>;
+}
+
+export async function fetchStockInfographic(
+  ticker: string,
+): Promise<InfographicResponse> {
+  const res = await fetch(
+    `${API_URL}/api/screener/infographic/${ticker.toUpperCase()}`,
+  );
+  if (!res.ok)
+    throw new Error(`Failed to fetch infographic data: ${res.status}`);
+  return res.json();
+}
