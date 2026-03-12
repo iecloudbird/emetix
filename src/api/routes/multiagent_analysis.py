@@ -19,11 +19,29 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import logging
 import json
+import math
 
 router = APIRouter(prefix="/multiagent", tags=["Multi-Agent Analysis"])
 
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=3)
+
+# =============================================================================
+# FLOAT SANITISER (prevents JSON serialisation errors from NaN / inf)
+# =============================================================================
+
+def _sanitize_floats(obj):
+    """Recursively replace NaN / inf float values with None so JSON serialisation succeeds."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
 
 # =============================================================================
 # ANALYSIS CACHE (reduces Gemini calls — TTL 8 hours)
@@ -98,13 +116,19 @@ def _save_to_cache(ticker: str, analysis_type: str, result: Dict):
 # REAL SCORE COMPUTATION (data-driven, NOT from LLM text)
 # =============================================================================
 
-def _compute_sentiment_score(ticker: str) -> float:
+def _compute_sentiment_data(ticker: str) -> dict:
     """
-    Compute a real sentiment score (0-1) from actual market data.
+    Compute sentiment data (0-1 scores) from actual market data.
+    Returns score + component breakdown for data-driven narrative.
     Combines: news sentiment (40%), analyst ratings (30%), price momentum (30%).
     """
     scores = []
     weights = []
+    details = {
+        "news_score": None, "num_articles": 0,
+        "analyst_score": None, "buy_count": 0, "hold_count": 0, "sell_count": 0,
+        "momentum_score": None, "month_return": None,
+    }
     
     # --- 1. News Sentiment (40% weight) ---
     try:
@@ -114,6 +138,24 @@ def _compute_sentiment_score(ticker: str) -> float:
         news_score = news_result.get("sentiment_score", 0.5)
         scores.append(news_score)
         weights.append(0.4)
+        details["news_score"] = round(news_score, 2)
+        details["num_articles"] = news_result.get("total_articles", 0)
+        details["sentiment_label"] = news_result.get("sentiment_label", "NEUTRAL")
+        details["positive_count"] = news_result.get("positive_count", 0)
+        details["negative_count"] = news_result.get("negative_count", 0)
+        details["neutral_count"] = news_result.get("neutral_count", 0)
+        details["company_name"] = news_result.get("company_name", ticker)
+        # Capture top 5 articles for headlines display
+        raw_articles = news_result.get("articles", [])[:5]
+        details["top_articles"] = [
+            {
+                "title": a.get("title", ""),
+                "source": a.get("source") or a.get("publisher", ""),
+                "sentiment": a.get("sentiment", "NEUTRAL"),
+                "publish_time": a.get("publish_time", ""),
+            }
+            for a in raw_articles if a.get("title")
+        ]
         logger.info(f"[{ticker}] News sentiment score: {news_score:.2f}")
     except Exception as e:
         logger.warning(f"[{ticker}] News sentiment failed: {e}")
@@ -153,6 +195,19 @@ def _compute_sentiment_score(ticker: str) -> float:
             
             scores.append(analyst_score)
             weights.append(0.3)
+            details["analyst_score"] = round(analyst_score, 2)
+            details["buy_count"] = buy_count
+            details["hold_count"] = hold_count
+            details["sell_count"] = sell_count
+            # Capture recent analyst actions (last 3) for narrative
+            recent_actions = []
+            for _, row in recent.tail(3).iterrows():
+                firm = row.get("Firm", "")
+                grade = row.get("To Grade", "")
+                action = row.get("Action", "")
+                if firm and grade:
+                    recent_actions.append({"firm": str(firm), "grade": str(grade), "action": str(action)})
+            details["recent_analyst_actions"] = recent_actions
             logger.info(f"[{ticker}] Analyst sentiment score: {analyst_score:.2f} ({buy_count}B/{hold_count}H/{sell_count}S)")
     except Exception as e:
         logger.warning(f"[{ticker}] Analyst ratings failed: {e}")
@@ -173,6 +228,8 @@ def _compute_sentiment_score(ticker: str) -> float:
             
             scores.append(momentum_score)
             weights.append(0.3)
+            details["momentum_score"] = round(momentum_score, 2)
+            details["month_return"] = round(month_return, 4)
             logger.info(f"[{ticker}] Momentum score: {momentum_score:.2f} (1mo return: {month_return:.1%})")
     except Exception as e:
         logger.warning(f"[{ticker}] Momentum calc failed: {e}")
@@ -180,57 +237,81 @@ def _compute_sentiment_score(ticker: str) -> float:
     # --- Weighted average ---
     if scores and weights:
         total_weight = sum(weights)
-        weighted_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-        return round(weighted_score, 2)
+        final_score = round(sum(s * w for s, w in zip(scores, weights)) / total_weight, 2)
+    else:
+        final_score = 0.5
     
-    return 0.5  # True fallback only if ALL sources failed
+    return {"score": final_score, **details}
 
 
-def _compute_fundamentals_scores(ticker: str) -> dict:
+def _compute_fundamentals_data(ticker: str) -> dict:
     """
     Compute real quality/growth/value scores (0-1) from actual financial data.
-    
-    Returns:
-        {"quality_score": float, "growth_score": float, "value_score": float}
+    Returns scores + raw metrics for data-driven narrative.
     """
     import yfinance as yf
     
     quality_score = 0.5
     growth_score = 0.5
     value_score = 0.5
+    metrics = {}
     
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         
+        # --- Context fields for enriched narrative ---
+        metrics["company_name"] = info.get("longName", ticker)
+        metrics["sector"] = info.get("sector", "")
+        metrics["industry"] = info.get("industry", "")
+        market_cap = info.get("marketCap")
+        if market_cap is not None:
+            metrics["market_cap"] = market_cap
+        fwd_pe = info.get("forwardPE")
+        if fwd_pe is not None and fwd_pe > 0:
+            metrics["forward_pe"] = round(fwd_pe, 1)
+        beta = info.get("beta")
+        if beta is not None:
+            metrics["beta"] = round(beta, 2)
+        div_yield = info.get("dividendYield")
+        if div_yield is not None:
+            metrics["dividend_yield"] = round(div_yield * 100, 2)
+        high_52 = info.get("fiftyTwoWeekHigh")
+        low_52 = info.get("fiftyTwoWeekLow")
+        curr_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if high_52 is not None:
+            metrics["fifty_two_week_high"] = round(high_52, 2)
+        if low_52 is not None:
+            metrics["fifty_two_week_low"] = round(low_52, 2)
+        if curr_price is not None:
+            metrics["current_price"] = round(curr_price, 2)
+        
         # --- Quality Score (profitability + financial health) ---
         quality_components = []
         
-        # ROE: >20% excellent, >15% good, >10% avg, <10% poor
         roe = info.get('returnOnEquity')
         if roe is not None:
-            roe_pct = roe * 100
-            roe_s = min(1.0, max(0.0, roe_pct / 25.0))  # 25% ROE → 1.0
+            metrics["roe"] = round(roe * 100, 1)
+            roe_s = min(1.0, max(0.0, roe * 100 / 25.0))
             quality_components.append(roe_s)
         
-        # Profit margin: >20% excellent, >10% good
         margin = info.get('profitMargins')
         if margin is not None:
-            margin_pct = margin * 100
-            margin_s = min(1.0, max(0.0, margin_pct / 25.0))
+            metrics["profit_margin"] = round(margin * 100, 1)
+            margin_s = min(1.0, max(0.0, margin * 100 / 25.0))
             quality_components.append(margin_s)
         
-        # Debt/Equity: <0.5 strong, <1.0 good, >2.0 weak
         de = info.get('debtToEquity')
         if de is not None:
-            de_ratio = de / 100  # yfinance returns as percentage
-            de_s = max(0.0, min(1.0, 1.0 - de_ratio / 3.0))  # 0 D/E → 1.0, 3.0 D/E → 0.0
+            de_ratio = de / 100
+            metrics["debt_to_equity"] = round(de_ratio, 2)
+            de_s = max(0.0, min(1.0, 1.0 - de_ratio / 3.0))
             quality_components.append(de_s)
         
-        # Current ratio: >2 strong, >1.5 good, <1 weak
         cr = info.get('currentRatio')
         if cr is not None:
-            cr_s = min(1.0, max(0.0, cr / 2.5))  # 2.5 → 1.0
+            metrics["current_ratio"] = round(cr, 2)
+            cr_s = min(1.0, max(0.0, cr / 2.5))
             quality_components.append(cr_s)
         
         if quality_components:
@@ -239,23 +320,21 @@ def _compute_fundamentals_scores(ticker: str) -> dict:
         # --- Growth Score (revenue + earnings growth) ---
         growth_components = []
         
-        # Revenue growth
         rev_growth = info.get('revenueGrowth')
         if rev_growth is not None:
-            rg_pct = rev_growth * 100
-            rg_s = min(1.0, max(0.0, (rg_pct + 5) / 30.0))  # -5%→0, 25%→1.0
+            metrics["revenue_growth"] = round(rev_growth * 100, 1)
+            rg_s = min(1.0, max(0.0, (rev_growth * 100 + 5) / 30.0))
             growth_components.append(rg_s)
         
-        # Earnings growth
         earn_growth = info.get('earningsGrowth')
         if earn_growth is not None:
-            eg_pct = earn_growth * 100
-            eg_s = min(1.0, max(0.0, (eg_pct + 10) / 40.0))  # -10%→0, 30%→1.0
+            metrics["earnings_growth"] = round(earn_growth * 100, 1)
+            eg_s = min(1.0, max(0.0, (earn_growth * 100 + 10) / 40.0))
             growth_components.append(eg_s)
         
-        # Revenue growth quarterly
         rev_q = info.get('revenueQuarterlyGrowth')
         if rev_q is not None:
+            metrics["rev_quarterly_growth"] = round(rev_q * 100, 1)
             rq_s = min(1.0, max(0.0, (rev_q * 100 + 5) / 30.0))
             growth_components.append(rq_s)
         
@@ -265,28 +344,28 @@ def _compute_fundamentals_scores(ticker: str) -> dict:
         # --- Value Score (valuation attractiveness) ---
         value_components = []
         
-        # P/E: <15 undervalued, 15-25 fair, >25 expensive
         pe = info.get('trailingPE')
         if pe is not None and pe > 0:
-            pe_s = max(0.0, min(1.0, 1.0 - (pe - 10) / 30.0))  # PE 10→1.0, PE 40→0.0
+            metrics["pe"] = round(pe, 1)
+            pe_s = max(0.0, min(1.0, 1.0 - (pe - 10) / 30.0))
             value_components.append(pe_s)
         
-        # PEG: <1 undervalued, 1-1.5 fair, >2 expensive
         peg = info.get('pegRatio')
         if peg is not None and peg > 0:
-            peg_s = max(0.0, min(1.0, 1.0 - (peg - 0.5) / 2.0))  # PEG 0.5→1.0, PEG 2.5→0.0
+            metrics["peg"] = round(peg, 2)
+            peg_s = max(0.0, min(1.0, 1.0 - (peg - 0.5) / 2.0))
             value_components.append(peg_s)
         
-        # P/B: <1.5 undervalued, <3 fair, >5 expensive
         pb = info.get('priceToBook')
         if pb is not None and pb > 0:
-            pb_s = max(0.0, min(1.0, 1.0 - (pb - 1) / 8.0))  # P/B 1→1.0, P/B 9→0.0
+            metrics["pb"] = round(pb, 2)
+            pb_s = max(0.0, min(1.0, 1.0 - (pb - 1) / 8.0))
             value_components.append(pb_s)
         
-        # EV/EBITDA: <10 cheap, 10-15 fair, >20 expensive
         ev_ebitda = info.get('enterpriseToEbitda')
         if ev_ebitda is not None and ev_ebitda > 0:
-            eve_s = max(0.0, min(1.0, 1.0 - (ev_ebitda - 5) / 20.0))  # 5→1.0, 25→0.0
+            metrics["ev_ebitda"] = round(ev_ebitda, 1)
+            eve_s = max(0.0, min(1.0, 1.0 - (ev_ebitda - 5) / 20.0))
             value_components.append(eve_s)
         
         if value_components:
@@ -300,8 +379,274 @@ def _compute_fundamentals_scores(ticker: str) -> dict:
     return {
         "quality_score": quality_score,
         "growth_score": growth_score,
-        "value_score": value_score
+        "value_score": value_score,
+        "metrics": metrics,
     }
+
+
+# =============================================================================
+# DATA-DRIVEN NARRATIVE BUILDERS (replace LLM agent narratives)
+# =============================================================================
+
+def _build_sentiment_narrative(ticker: str, data: dict) -> str:
+    """Build a data-driven sentiment narrative from computed data."""
+    score = data["score"]
+    label = _score_to_label(score)
+    company = data.get("company_name", ticker)
+    parts = [f"## Market Sentiment for {company} ({ticker})\n", f"**Overall Score: {score:.0%} ({label})**\n"]
+
+    # --- Top Headlines ---
+    articles = data.get("top_articles", [])
+    if articles:
+        parts.append("### Top Headlines")
+        sentiment_icons = {"POSITIVE": "+", "NEGATIVE": "-", "NEUTRAL": "~"}
+        for a in articles:
+            icon = sentiment_icons.get(a["sentiment"], "~")
+            source = f" — *{a['source']}*" if a.get("source") else ""
+            parts.append(f"- [{icon}] {a['title']}{source}")
+        parts.append("")
+
+    # --- Score Breakdown ---
+    parts.append("### Score Breakdown")
+
+    if data.get("news_score") is not None:
+        ns = data["news_score"]
+        n_lbl = "positive" if ns > 0.6 else "negative" if ns < 0.4 else "mixed"
+        art = data.get("num_articles", 0)
+        pos = data.get("positive_count", 0)
+        neg = data.get("negative_count", 0)
+        neu = data.get("neutral_count", 0)
+        breakdown = f" ({pos} positive, {neg} negative, {neu} neutral)" if art > 0 else ""
+        parts.append(f"- **News Sentiment** (40% weight): {ns:.0%} ({n_lbl}) — {art} articles analyzed{breakdown}")
+
+    if data.get("analyst_score") is not None:
+        b, h, s = data["buy_count"], data["hold_count"], data["sell_count"]
+        parts.append(f"- **Analyst Ratings** (30% weight): {data['analyst_score']:.0%} — {b} Buy, {h} Hold, {s} Sell")
+        # Show recent analyst actions
+        actions = data.get("recent_analyst_actions", [])
+        for act in actions:
+            action_str = f" ({act['action']})" if act.get("action") else ""
+            parts.append(f"  - {act['firm']}: **{act['grade']}**{action_str}")
+
+    if data.get("momentum_score") is not None:
+        mr = data.get("month_return", 0)
+        mom_lbl = "strong uptrend" if mr > 0.05 else "mild uptrend" if mr > 0 else "mild downtrend" if mr > -0.05 else "strong downtrend"
+        parts.append(f"- **Price Momentum** (30% weight): {data['momentum_score']:.0%} ({mr:+.1%} 1-month return — {mom_lbl})")
+
+    # --- Key Takeaways ---
+    parts.append("\n### Key Takeaways")
+    takeaways = []
+
+    # News distribution insight
+    pos = data.get("positive_count", 0)
+    neg = data.get("negative_count", 0)
+    total_art = pos + neg + data.get("neutral_count", 0)
+    if total_art > 0:
+        if pos > neg * 2:
+            takeaways.append(f"News coverage is overwhelmingly positive ({pos}/{total_art} articles bullish)")
+        elif neg > pos * 2:
+            takeaways.append(f"News coverage is predominantly negative ({neg}/{total_art} articles bearish) — monitor for catalysts")
+        elif pos > neg:
+            takeaways.append(f"Slightly positive news tilt ({pos} positive vs {neg} negative out of {total_art} articles)")
+        elif neg > pos:
+            takeaways.append(f"Slightly negative news tilt ({neg} negative vs {pos} positive out of {total_art} articles)")
+        else:
+            takeaways.append(f"Balanced news sentiment across {total_art} articles — market is undecided")
+
+    # Analyst consensus insight
+    b, h, s_cnt = data.get("buy_count", 0), data.get("hold_count", 0), data.get("sell_count", 0)
+    total_analysts = b + h + s_cnt
+    if total_analysts > 0:
+        if b > total_analysts * 0.6:
+            takeaways.append(f"Strong analyst consensus: {b}/{total_analysts} recommend Buy or equivalent")
+        elif s_cnt > total_analysts * 0.3:
+            takeaways.append(f"Analyst caution: {s_cnt}/{total_analysts} have Sell-equivalent ratings")
+        else:
+            takeaways.append(f"Analyst opinions are mixed with no clear consensus ({b}B/{h}H/{s_cnt}S)")
+
+    # Momentum divergence insight
+    mr = data.get("month_return")
+    ns = data.get("news_score")
+    if mr is not None and ns is not None:
+        if mr > 0.05 and ns < 0.4:
+            takeaways.append("**Divergence**: Price rising despite negative news — could indicate institutional buying or priced-in negativity")
+        elif mr < -0.05 and ns > 0.6:
+            takeaways.append("**Divergence**: Price falling despite positive news — watch for delayed reaction or broader market pressure")
+
+    for t in takeaways:
+        parts.append(f"- {t}")
+
+    # Overall assessment
+    if score >= 0.7:
+        parts.append("\n**Outlook**: Strong bullish signals across multiple indicators suggest favorable market conditions.")
+    elif score >= 0.55:
+        parts.append("\n**Outlook**: Moderately positive signals indicate cautious optimism in the market.")
+    elif score >= 0.45:
+        parts.append("\n**Outlook**: Mixed signals suggest uncertainty — consider other factors before acting.")
+    elif score >= 0.3:
+        parts.append("\n**Outlook**: Bearish signals dominate — potential risk or contrarian opportunity if fundamentals are strong.")
+    else:
+        parts.append("\n**Outlook**: Strongly negative sentiment — high caution warranted.")
+
+    return "\n".join(parts)
+
+
+def _build_fundamentals_narrative(ticker: str, data: dict) -> str:
+    """Build a data-driven fundamentals narrative from computed data."""
+    q = data["quality_score"]
+    g = data["growth_score"]
+    v = data["value_score"]
+    m = data.get("metrics", {})
+
+    company = m.get("company_name", ticker)
+    parts = [f"## Fundamental Analysis for {company} ({ticker})\n"]
+
+    # --- Sector Context ---
+    sector = m.get("sector", "")
+    industry = m.get("industry", "")
+    market_cap = m.get("market_cap")
+    if sector or industry or market_cap:
+        context_bits = []
+        if sector and industry:
+            context_bits.append(f"**{industry}** ({sector})")
+        elif sector:
+            context_bits.append(f"**{sector}**")
+        if market_cap:
+            if market_cap >= 200e9:
+                cap_tier = "Mega-Cap"
+            elif market_cap >= 10e9:
+                cap_tier = "Large-Cap"
+            elif market_cap >= 2e9:
+                cap_tier = "Mid-Cap"
+            elif market_cap >= 300e6:
+                cap_tier = "Small-Cap"
+            else:
+                cap_tier = "Micro-Cap"
+            cap_str = f"${market_cap / 1e9:.1f}B" if market_cap >= 1e9 else f"${market_cap / 1e6:.0f}M"
+            context_bits.append(f"{cap_tier} ({cap_str})")
+        if m.get("beta") is not None:
+            beta = m["beta"]
+            beta_lbl = "low volatility" if beta < 0.8 else "market-average volatility" if beta <= 1.2 else "high volatility"
+            context_bits.append(f"Beta {beta:.2f} ({beta_lbl})")
+        if m.get("dividend_yield") is not None and m["dividend_yield"] > 0:
+            context_bits.append(f"Dividend {m['dividend_yield']:.2f}%")
+        parts.append(f"*{' · '.join(context_bits)}*\n")
+
+    # Quality
+    q_label = "Strong" if q >= 0.7 else "Average" if q >= 0.4 else "Weak"
+    parts.append(f"### Quality: {q:.0%} ({q_label})")
+    q_details = []
+    if "roe" in m:
+        roe_note = "excellent" if m["roe"] >= 20 else "good" if m["roe"] >= 12 else "below average"
+        q_details.append(f"ROE {m['roe']:.1f}% (*{roe_note}; benchmark >15%*)")
+    if "profit_margin" in m:
+        mg_note = "strong" if m["profit_margin"] >= 20 else "healthy" if m["profit_margin"] >= 10 else "thin"
+        q_details.append(f"Profit Margin {m['profit_margin']:.1f}% (*{mg_note}*)")
+    if "debt_to_equity" in m:
+        de_note = "conservative" if m["debt_to_equity"] <= 0.5 else "moderate" if m["debt_to_equity"] <= 1.5 else "high leverage"
+        q_details.append(f"D/E {m['debt_to_equity']:.2f} (*{de_note}; <1.0 preferred*)")
+    if "current_ratio" in m:
+        cr_note = "strong liquidity" if m["current_ratio"] >= 2.0 else "adequate" if m["current_ratio"] >= 1.0 else "liquidity risk"
+        q_details.append(f"Current Ratio {m['current_ratio']:.2f} (*{cr_note}; >1.5 healthy*)")
+    for d in q_details:
+        parts.append(f"- {d}")
+
+    # Growth
+    g_label = "High Growth" if g >= 0.7 else "Moderate" if g >= 0.4 else "Low"
+    parts.append(f"\n### Growth: {g:.0%} ({g_label})")
+    g_details = []
+    if "revenue_growth" in m:
+        rg = m["revenue_growth"]
+        rg_note = "accelerating" if rg >= 15 else "steady" if rg >= 5 else "slowing" if rg >= 0 else "declining"
+        g_details.append(f"Revenue Growth {rg:+.1f}% (*{rg_note}*)")
+    if "earnings_growth" in m:
+        eg = m["earnings_growth"]
+        eg_note = "strong expansion" if eg >= 20 else "solid" if eg >= 5 else "compressing" if eg >= 0 else "declining"
+        g_details.append(f"Earnings Growth {eg:+.1f}% (*{eg_note}*)")
+    if "rev_quarterly_growth" in m:
+        rq = m["rev_quarterly_growth"]
+        g_details.append(f"Quarterly Revenue Growth {rq:+.1f}%")
+    for d in g_details:
+        parts.append(f"- {d}")
+
+    # Value
+    v_label = "Undervalued" if v >= 0.7 else "Fair" if v >= 0.4 else "Expensive"
+    parts.append(f"\n### Value: {v:.0%} ({v_label})")
+    v_details = []
+    if "pe" in m:
+        pe = m["pe"]
+        pe_note = "cheap" if pe < 15 else "reasonable" if pe < 25 else "premium" if pe < 40 else "very expensive"
+        v_details.append(f"P/E {pe:.1f} (*{pe_note}; market avg ~20-22*)")
+    if "forward_pe" in m and "pe" in m:
+        fwd = m["forward_pe"]
+        compression = "earnings expected to grow" if fwd < m["pe"] else "earnings expected to compress"
+        v_details.append(f"Forward P/E {fwd:.1f} (*{compression}*)")
+    elif "forward_pe" in m:
+        v_details.append(f"Forward P/E {m['forward_pe']:.1f}")
+    if "peg" in m:
+        peg = m["peg"]
+        peg_note = "undervalued for growth" if peg < 1.0 else "fair for growth" if peg < 2.0 else "overvalued relative to growth"
+        v_details.append(f"PEG {peg:.2f} (*{peg_note}; <1.0 is attractive*)")
+    if "pb" in m:
+        pb = m["pb"]
+        pb_note = "below book value" if pb < 1.0 else "reasonable" if pb < 3.0 else "premium to book"
+        v_details.append(f"P/B {pb:.2f} (*{pb_note}*)")
+    if "ev_ebitda" in m:
+        eve = m["ev_ebitda"]
+        eve_note = "cheap" if eve < 10 else "fair" if eve < 15 else "expensive"
+        v_details.append(f"EV/EBITDA {eve:.1f} (*{eve_note}; <12 typically attractive*)")
+    for d in v_details:
+        parts.append(f"- {d}")
+
+    # --- Key Turning Points to Watch ---
+    watchpoints = []
+    # Earnings vs revenue divergence
+    if "earnings_growth" in m and "revenue_growth" in m:
+        eg, rg = m["earnings_growth"], m["revenue_growth"]
+        if eg < 0 and rg > 5:
+            watchpoints.append("Earnings declining while revenue grows — margin compression, watch for cost management changes")
+        elif eg > rg * 2 and eg > 10:
+            watchpoints.append("Earnings growing much faster than revenue — margin expansion, but may not be sustainable long-term")
+    # High debt with declining margins
+    if "debt_to_equity" in m and "profit_margin" in m:
+        if m["debt_to_equity"] > 1.5 and m["profit_margin"] < 10:
+            watchpoints.append("High leverage with thin margins — monitor interest coverage and cash flow generation closely")
+    # 52-week range positioning
+    if "current_price" in m and "fifty_two_week_high" in m and "fifty_two_week_low" in m:
+        cp = m["current_price"]
+        high = m["fifty_two_week_high"]
+        low = m["fifty_two_week_low"]
+        range_pct = (cp - low) / (high - low) * 100 if high != low else 50
+        if range_pct > 90:
+            watchpoints.append(f"Trading near 52-week high (${cp:.2f} vs ${high:.2f}) — momentum is strong but watch for resistance")
+        elif range_pct < 15:
+            watchpoints.append(f"Trading near 52-week low (${cp:.2f} vs ${low:.2f}) — could be a value opportunity or a falling knife")
+    # Extreme P/E
+    if "pe" in m:
+        if m["pe"] > 50:
+            watchpoints.append(f"P/E of {m['pe']:.0f}x is very elevated — market expects exceptional growth; any earnings miss could trigger correction")
+        elif m["pe"] < 8 and m.get("earnings_growth", 0) >= 0:
+            watchpoints.append(f"P/E of {m['pe']:.0f}x is extremely low for a profitable company — potential value trap or hidden gem")
+    # PEG signal
+    if "peg" in m:
+        if m["peg"] > 3.0:
+            watchpoints.append(f"PEG of {m['peg']:.1f} suggests you're overpaying for the growth rate — compare with sector peers")
+
+    if watchpoints:
+        parts.append("\n### Key Turning Points to Watch")
+        for wp in watchpoints:
+            parts.append(f"- {wp}")
+
+    # Overall assessment
+    avg = (q + g + v) / 3
+    if avg >= 0.65:
+        parts.append("\n**Overall**: Fundamentals are **solid** across quality, growth, and value dimensions.")
+    elif avg >= 0.45:
+        parts.append("\n**Overall**: Fundamentals are **mixed** — some pillars are stronger than others.")
+    else:
+        parts.append("\n**Overall**: Fundamentals are **weak** — caution recommended.")
+
+    return "\n".join(parts)
 
 
 def _extract_text_from_langchain_content(content: Any) -> str:
@@ -493,6 +838,9 @@ async def get_multiagent_analysis(
                 synthesis = await _generate_synthesis(ticker, result["sections"], deep_mode=deep_synthesis)
                 result["sections"]["synthesis"] = synthesis
         
+        # Sanitise before caching / returning (NaN / inf → None)
+        result = _sanitize_floats(result)
+
         # Cache the result for future requests
         _save_to_cache(ticker, cache_type, result)
 
@@ -513,12 +861,12 @@ async def get_sentiment_only(ticker: str):
     
     try:
         result = await _get_sentiment_analysis(ticker)
-        return {
+        return _sanitize_floats({
             "status": "success" if result.get("available") else "partial",
             "ticker": ticker,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "sentiment": result
-        }
+        })
     except Exception as e:
         logger.error(f"Sentiment analysis error for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -534,12 +882,12 @@ async def get_fundamentals_only(ticker: str):
     
     try:
         result = await _get_fundamentals_analysis(ticker)
-        return {
+        return _sanitize_floats({
             "status": "success" if result.get("available") else "partial",
             "ticker": ticker,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "fundamentals": result
-        }
+        })
     except Exception as e:
         logger.error(f"Fundamentals analysis error for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -555,12 +903,12 @@ async def get_ml_valuation_only(ticker: str):
     
     try:
         result = await _get_ml_valuation(ticker)
-        return {
+        return _sanitize_floats({
             "status": "success" if result.get("available") else "partial",
             "ticker": ticker,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "ml_valuation": result
-        }
+        })
     except Exception as e:
         logger.error(f"ML valuation error for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -639,7 +987,7 @@ async def analyze_watchlist(
                 s["ticker"] for s in result["stocks"] if s.get("contrarian_flag")
             ]
         
-        return result
+        return _sanitize_floats(result)
         
     except Exception as e:
         logger.error(f"Watchlist analysis error: {e}")
@@ -651,150 +999,137 @@ async def analyze_watchlist(
 # =============================================================================
 
 async def _get_sentiment_analysis(ticker: str) -> Dict[str, Any]:
-    """Get sentiment analysis from SentimentAnalyzerAgent + compute real score from data."""
+    """Data-driven sentiment analysis — NO LLM call. Uses computed scores + narrative."""
     try:
-        agent = get_sentiment_agent()
-        if not agent:
-            return {"available": False, "error": "SentimentAnalyzerAgent not available"}
-        
         loop = asyncio.get_event_loop()
-        
-        # Run LLM agent analysis AND real score computation in parallel
-        agent_future = loop.run_in_executor(
-            _executor,
-            lambda: agent.analyze_comprehensive_sentiment(ticker)
-        )
-        score_future = loop.run_in_executor(
-            None,
-            lambda: _compute_sentiment_score(ticker)
-        )
-        
-        result, computed_score = await asyncio.gather(agent_future, score_future)
-        
-        # Parse LLM text
-        if isinstance(result, dict):
-            raw_analysis = result.get("sentiment_analysis", "")
-            sentiment_analysis = _extract_text_from_langchain_content(raw_analysis)
-        else:
-            sentiment_analysis = _extract_text_from_langchain_content(result)
-        
-        # Use the REAL computed score (not from LLM text)
-        sentiment_score = computed_score
-        
+        data = await loop.run_in_executor(None, lambda: _compute_sentiment_data(ticker))
+
+        score = data["score"]
+        label = _score_to_label(score)
+        analysis = _build_sentiment_narrative(ticker, data)
+
         return {
             "available": True,
             "agent": "SentimentAnalyzerAgent",
-            "analysis": sentiment_analysis,
-            "sentiment_score": sentiment_score,
-            "sentiment_label": _score_to_label(sentiment_score)
+            "analysis": analysis,
+            "sentiment_score": score,
+            "sentiment_label": label,
         }
-        
     except Exception as e:
-        logger.error(f"Sentiment agent error for {ticker}: {e}")
-        return {
-            "available": False,
-            "error": str(e)
-        }
+        logger.error(f"Sentiment analysis error for {ticker}: {e}")
+        return {"available": False, "error": str(e)}
 
 
 async def _get_fundamentals_analysis(ticker: str) -> Dict[str, Any]:
-    """Get fundamental analysis from FundamentalsAnalyzerAgent + compute real scores from data."""
+    """Data-driven fundamentals analysis — NO LLM call. Uses computed scores + narrative."""
     try:
-        agent = get_fundamentals_agent()
-        if not agent:
-            return {"available": False, "error": "FundamentalsAnalyzerAgent not available"}
-        
         loop = asyncio.get_event_loop()
-        
-        # Run LLM agent analysis AND real score computation in parallel
-        agent_future = loop.run_in_executor(
-            _executor,
-            lambda: agent.analyze_comprehensive_fundamentals(ticker)
-        )
-        score_future = loop.run_in_executor(
-            None,
-            lambda: _compute_fundamentals_scores(ticker)
-        )
-        
-        result, computed_scores = await asyncio.gather(agent_future, score_future)
-        
-        # Parse LLM text
-        if isinstance(result, dict):
-            raw_analysis = result.get("fundamental_analysis", "")
-            fundamental_analysis = _extract_text_from_langchain_content(raw_analysis)
-        else:
-            fundamental_analysis = _extract_text_from_langchain_content(result)
-        
-        # Use REAL computed scores (not from LLM text)
-        quality_score = computed_scores["quality_score"]
-        growth_score = computed_scores["growth_score"]
-        value_score = computed_scores["value_score"]
-        
+        data = await loop.run_in_executor(None, lambda: _compute_fundamentals_data(ticker))
+
+        analysis = _build_fundamentals_narrative(ticker, data)
+
         return {
             "available": True,
             "agent": "FundamentalsAnalyzerAgent",
-            "analysis": fundamental_analysis,
-            "quality_score": quality_score,
-            "growth_score": growth_score,
-            "value_score": value_score
+            "analysis": analysis,
+            "quality_score": data["quality_score"],
+            "growth_score": data["growth_score"],
+            "value_score": data["value_score"],
         }
-        
     except Exception as e:
-        logger.error(f"Fundamentals agent error for {ticker}: {e}")
-        return {
-            "available": False,
-            "error": str(e)
-        }
+        logger.error(f"Fundamentals analysis error for {ticker}: {e}")
+        return {"available": False, "error": str(e)}
 
 
 async def _get_ml_valuation(ticker: str) -> Dict[str, Any]:
-    """Get ML-powered valuation from EnhancedValuationAgent."""
+    """ML valuation via direct tool calls — NO LLM orchestration."""
     try:
         agent = get_enhanced_valuation_agent()
         if not agent:
             return {"available": False, "error": "EnhancedValuationAgent not available"}
-        
+
+        # Build tool lookup from the agent's registered tools
+        tool_map = {t.name: t for t in agent.tools}
         loop = asyncio.get_event_loop()
-        query = f"Calculate the LSTM-DCF fair value and consensus score for {ticker}. Include margin of safety."
-        result = await loop.run_in_executor(
-            _executor,
-            lambda: agent.analyze(query)
+
+        # Call LSTM-DCF and Consensus tools directly (no LLM decides)
+        lstm_future = loop.run_in_executor(
+            _executor, lambda: tool_map["LSTM_DCF_Valuation"].func(ticker)
         )
-        
-        # Extract text from LangChain response format
-        analysis_text = _extract_text_from_langchain_content(result)
-        
-        # Parse the result for structured data
+        consensus_future = loop.run_in_executor(
+            _executor, lambda: tool_map["ConsensusValuation"].func(ticker)
+        )
+        lstm_text, consensus_text = await asyncio.gather(lstm_future, consensus_future)
+
+        raw_text = f"{lstm_text}\n\n{consensus_text}"
+
+        # Parse structured metrics from tool output
+        import re
         fair_value = None
         consensus_score = None
         margin_of_safety = None
-        
-        import re
-        
-        # Look for fair value
-        fv_match = re.search(r'fair value[:\s]*\$?([\d.]+)', analysis_text, re.IGNORECASE)
+
+        fv_match = re.search(r'(?:Fair Value|Implied Fair Value)[:\s]*\$?([\d.]+)', raw_text, re.IGNORECASE)
         if fv_match:
             try:
                 fair_value = float(fv_match.group(1))
             except ValueError:
                 pass
-        
-        # Look for consensus score
-        cs_match = re.search(r'consensus[:\s]*([\d.]+)', analysis_text, re.IGNORECASE)
+
+        cs_match = re.search(r'Consensus Score[:\s]*([\d.]+)', raw_text, re.IGNORECASE)
         if cs_match:
             try:
                 consensus_score = float(cs_match.group(1))
             except ValueError:
                 pass
-        
-        # Look for margin of safety
-        mos_match = re.search(r'margin[:\s]*([\d.]+)%?', analysis_text, re.IGNORECASE)
-        if mos_match:
+
+        gap_match = re.search(r'Valuation Gap[:\s]*([\-+]?[\d.]+)%', raw_text, re.IGNORECASE)
+        if gap_match:
             try:
-                margin_of_safety = float(mos_match.group(1))
+                margin_of_safety = float(gap_match.group(1))
             except ValueError:
                 pass
-        
+
+        # Parse additional details for enriched narrative
+        current_price = None
+        cp_match = re.search(r'Current (?:Price|Market Price)[:\s]*\$?([\d.]+)', raw_text, re.IGNORECASE)
+        if cp_match:
+            try:
+                current_price = float(cp_match.group(1))
+            except ValueError:
+                pass
+
+        model_version = None
+        ver_match = re.search(r'(?:Model Version|Version)[:\s]*(V?\d[\w.]*)', raw_text, re.IGNORECASE)
+        if ver_match:
+            model_version = ver_match.group(1)
+
+        confidence_level = None
+        conf_match = re.search(r'Confidence[:\s]*(\w+)', raw_text, re.IGNORECASE)
+        if conf_match:
+            confidence_level = conf_match.group(1)
+
+        # Parse growth forecasts if present (V2 model)
+        rev_growth = None
+        fcf_growth = None
+        rg_match = re.search(r'Revenue Growth[:\s]*([\-+]?[\d.]+)%', raw_text, re.IGNORECASE)
+        if rg_match:
+            try:
+                rev_growth = float(rg_match.group(1))
+            except ValueError:
+                pass
+        fg_match = re.search(r'FCF Growth[:\s]*([\-+]?[\d.]+)%', raw_text, re.IGNORECASE)
+        if fg_match:
+            try:
+                fcf_growth = float(fg_match.group(1))
+            except ValueError:
+                pass
+
+        analysis_text = _build_ml_narrative(
+            ticker, raw_text, fair_value, consensus_score, margin_of_safety,
+            current_price, model_version, confidence_level, rev_growth, fcf_growth
+        )
+
         return {
             "available": True,
             "agent": "EnhancedValuationAgent",
@@ -802,16 +1137,127 @@ async def _get_ml_valuation(ticker: str) -> Dict[str, Any]:
             "extracted_metrics": {
                 "fair_value": fair_value,
                 "consensus_score": consensus_score,
-                "margin_of_safety": margin_of_safety
-            }
+                "margin_of_safety": margin_of_safety,
+            },
         }
-        
     except Exception as e:
         logger.error(f"ML valuation agent error for {ticker}: {e}")
         return {
             "available": False,
             "error": str(e)
         }
+
+
+def _build_ml_narrative(
+    ticker: str, raw_text: str,
+    fair_value, consensus_score, margin_of_safety,
+    current_price, model_version, confidence_level,
+    rev_growth, fcf_growth,
+) -> str:
+    """Build an enriched ML valuation narrative with methodology context."""
+    parts = [f"## ML-Powered Valuation for {ticker}\n"]
+
+    # --- Methodology Section ---
+    parts.append("### Methodology")
+    is_v2 = model_version and "2" in str(model_version)
+    if is_v2:
+        parts.append(
+            "This valuation uses the **LSTM-DCF V2 model**, which analyzes quarterly fundamental data "
+            "(revenue, free cash flow, margins) through a Long Short-Term Memory neural network to forecast "
+            "10-year cash flows, then discounts them to present value. V2 incorporates fundamental-driven "
+            "growth patterns rather than relying solely on price history."
+        )
+    else:
+        parts.append(
+            "This valuation uses the **LSTM-DCF model**, which combines machine learning (Long Short-Term Memory "
+            "neural networks) with traditional Discounted Cash Flow analysis. The model learns temporal patterns "
+            "from 60 periods of historical data across 12 features (price, volume, fundamentals, technicals) "
+            "to forecast future cash flows."
+        )
+    parts.append(
+        "\nThe **Consensus Score** blends multiple models: LSTM-DCF (50% weight), "
+        "Traditional Valuation (40%), and Risk Assessment (10%) to provide a balanced view.\n"
+    )
+
+    # --- Valuation Results ---
+    parts.append("### Valuation Results")
+    if current_price is not None and fair_value is not None:
+        parts.append(f"- **Current Price**: ${current_price:.2f}")
+        parts.append(f"- **ML Fair Value**: ${fair_value:.2f}")
+        if margin_of_safety is not None:
+            if margin_of_safety > 0:
+                parts.append(f"- **Valuation Gap**: {margin_of_safety:+.1f}% — stock appears **undervalued** by the model")
+            elif margin_of_safety < -5:
+                parts.append(f"- **Valuation Gap**: {margin_of_safety:+.1f}% — stock appears **overvalued** by the model")
+            else:
+                parts.append(f"- **Valuation Gap**: {margin_of_safety:+.1f}% — stock is trading near **fair value**")
+    if consensus_score is not None:
+        if consensus_score >= 0.7:
+            cs_lbl = "Strong Buy signal"
+        elif consensus_score >= 0.55:
+            cs_lbl = "Moderate Buy signal"
+        elif consensus_score >= 0.45:
+            cs_lbl = "Hold / Neutral"
+        elif consensus_score >= 0.3:
+            cs_lbl = "Moderate Sell signal"
+        else:
+            cs_lbl = "Strong Sell signal"
+        parts.append(f"- **Consensus Score**: {consensus_score:.2f} — {cs_lbl}")
+    if confidence_level:
+        parts.append(f"- **Model Confidence**: {confidence_level}")
+
+    # --- Growth Assumptions ---
+    if rev_growth is not None or fcf_growth is not None:
+        parts.append("\n### Growth Assumptions Applied")
+        if rev_growth is not None:
+            rg_note = "above-average growth" if rev_growth > 10 else "moderate growth" if rev_growth > 3 else "low or declining growth"
+            parts.append(f"- **Projected Revenue Growth**: {rev_growth:+.1f}% (*{rg_note}*)")
+        if fcf_growth is not None:
+            fg_note = "strong cash generation" if fcf_growth > 10 else "steady cash flows" if fcf_growth > 0 else "declining free cash flow"
+            parts.append(f"- **Projected FCF Growth**: {fcf_growth:+.1f}% (*{fg_note}*)")
+        parts.append("*These growth rates are ML-derived forecasts based on historical fundamental trends, not analyst estimates.*")
+
+    # --- What This Means ---
+    parts.append("\n### What This Means")
+    if margin_of_safety is not None:
+        gap = margin_of_safety
+        if gap >= 30:
+            parts.append(
+                f"The model estimates significant upside potential ({gap:+.1f}%). This level of discount "
+                "could indicate a strong buying opportunity — but verify with fundamental quality and "
+                "check if there are negative catalysts the model may not capture (lawsuits, regulatory risk)."
+            )
+        elif gap >= 10:
+            parts.append(
+                f"The model sees moderate upside ({gap:+.1f}%). The stock may be trading below intrinsic value, "
+                "suggesting a reasonable entry point for long-term investors. Consider position sizing based on conviction."
+            )
+        elif gap >= -5:
+            parts.append(
+                f"The stock is trading approximately at fair value ({gap:+.1f}%). "
+                "No strong buy or sell signal from valuation alone. Look to other factors (growth trajectory, "
+                "competitive position, sentiment) to make a decision."
+            )
+        elif gap >= -20:
+            parts.append(
+                f"The model indicates the stock is moderately overvalued ({gap:+.1f}%). "
+                "This doesn't necessarily mean sell — high-quality growth companies often trade at premiums. "
+                "Evaluate whether the growth rate justifies the premium."
+            )
+        else:
+            parts.append(
+                f"The model flags significant overvaluation ({gap:+.1f}%). "
+                "Proceed with caution — either the market expects exceptional future growth the model doesn't "
+                "capture, or there may be downside risk if expectations aren't met."
+            )
+    else:
+        parts.append("Insufficient data to determine valuation gap. Review the raw model output below for details.")
+
+    # --- Raw Model Output ---
+    parts.append("\n### Detailed Model Output")
+    parts.append(raw_text)
+
+    return "\n".join(parts)
 
 
 async def _generate_synthesis(ticker: str, sections: Dict[str, Any], deep_mode: bool = False) -> Dict[str, Any]:
@@ -994,12 +1440,12 @@ async def get_holdings_only(ticker: str):
     ticker = ticker.upper()
     try:
         result = await _get_holdings_data(ticker)
-        return {
+        return _sanitize_floats({
             "status": "success" if result.get("available") else "partial",
             "ticker": ticker,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "holdings": result,
-        }
+        })
     except Exception as e:
         logger.error(f"Holdings data error for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

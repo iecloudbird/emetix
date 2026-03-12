@@ -35,7 +35,9 @@ _Democratize professional stock analysis by making institutional-grade valuation
 | Personal Risk Profiling           | Questionnaire-based risk assessment with position sizing guidance           |
 | Smart Screener with Risk Filters  | Risk profile integration filters stocks matching investor's appetite        |
 | AI Stock Preview Panel            | Instant AI-generated headlines and company descriptions in screener         |
-| LLM Analysis Caching              | localStorage caching (1–2 hr TTL) for fast repeat access                    |
+| LLM Analysis Caching              | Server-side MongoDB cache (8h TTL) + client localStorage (1–2 hr TTL)       |
+| Data-First Analysis Architecture  | 75% LLM reduction: data-driven narratives + single LLM synthesis call       |
+| Enriched Data-Driven Narratives   | Benchmark annotations, top headlines, turning-point flags — no LLM needed   |
 | Cold-Start Awareness Banner       | Graceful UX when backend wakes from Render free-tier sleep                  |
 | Command Palette (Cmd+K)           | Quick-search navigation across all stocks                                   |
 
@@ -46,7 +48,7 @@ _Democratize professional stock analysis by making institutional-grade valuation
 | Component              | Technology                            | Purpose                                     |
 | ---------------------- | ------------------------------------- | ------------------------------------------- |
 | **Frontend**           | Next.js 16, React 19, Tailwind v4     | Interactive dashboard & stock screener      |
-| **Backend API**        | FastAPI, Python 3.10                  | 40+ RESTful endpoints across 6 routers      |
+| **Backend API**        | FastAPI, Python 3.10                  | 50+ RESTful endpoints across 6 routers      |
 | **Multi-Agent System** | LangGraph + Google Gemini 2.5         | 8 specialised AI agents                     |
 | **ML Pipeline**        | PyTorch Lightning LSTM-DCF V2         | Fair value prediction & consensus           |
 | **Scoring Engine**     | 5-Pillar Composite v3.1               | Quantitative stock scoring & classification |

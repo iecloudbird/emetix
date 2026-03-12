@@ -72,7 +72,7 @@ The backend is a single FastAPI application (v3.5.0) with 6 routers:
 | **Screener**     | `routes.screener`            | `/api`   | Stock lookup, charts, sectors, agent tools       |
 | **Pipeline**     | `routes.pipeline`            | `/api`   | 3-stage pipeline endpoints (attention → curated) |
 | **Analysis**     | `routes.analysis`            | `/api`   | AI-powered stock analysis                        |
-| **Multi-Agent**  | `routes.multiagent_analysis` | `/api`   | Full multi-agent orchestration                   |
+| **Multi-Agent**  | `routes.multiagent_analysis` | `/api`   | Data-first multi-agent analysis (1 LLM call)     |
 | **Risk Profile** | `routes.risk_profile`        | _(none)_ | Personal risk assessment & position sizing       |
 | **Storage**      | `routes.storage`             | `/api`   | MongoDB watchlist & strategy CRUD                |
 
@@ -112,16 +112,26 @@ All fetchers return `None` on failure — they never raise exceptions.
 - **Database**: `emetix_pipeline` (configurable)
 - **Collections**: `universe_stocks`, `attention_stocks`, `qualified_stocks`, `classified_stocks`, `curated_watchlist`, `watchlists`, `strategies`, `analysis_cache`
 - **Indexes**: Pipeline collections have `ticker` (unique) indexes. `analysis_cache` has compound `(ticker, type)` unique index for fast cache lookups.
-- **Analysis Cache**: Multi-agent analysis results cached for 8 hours to minimise Gemini API calls. Stored in `analysis_cache` collection with TTL staleness check.
+- **Analysis Cache**: Multi-agent analysis results cached for **8 hours** to minimise Gemini API calls. Stored in `analysis_cache` collection with TTL staleness check. Combined with the **data-first architecture** (see [04 — Multi-Agent System](04_MULTIAGENT_SYSTEM.md)), this reduces LLM calls from 4 per analysis to 1, critical for free-tier Gemini rate limits (20 RPD).
 
 ---
 
 ## Shared Utilities (`src/utils/`)
 
-| Module                 | Purpose                                           |
-| ---------------------- | ------------------------------------------------- |
-| `llm_provider.py`      | Centralised LLM access (`get_llm(model_tier)`)    |
-| `financial_signals.py` | Revenue CAGR, 200WMA signal, contrarian detection |
+| Module                 | Purpose                                                                  |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `llm_provider.py`      | Centralised LLM access with 3-tier model routing (`get_llm(model_tier)`) |
+| `financial_signals.py` | Revenue CAGR, 200WMA signal, contrarian detection                        |
+
+### LLM Provider Tiers
+
+| Tier        | Model                   | Rate Limit          | Role                                           |
+| ----------- | ----------------------- | ------------------- | ---------------------------------------------- |
+| **Large**   | `gemini-2.5-flash`      | 5 RPM / 20 RPD      | Synthesis (only LLM call in standard analysis) |
+| **Default** | `gemini-2.5-flash-lite` | 10 RPM / 20 RPD     | Supervisor agent orchestration (deep mode)     |
+| **Fast**    | `gemma-3-27b-it`        | 30 RPM / 14,400 RPD | High-volume endpoints                          |
+
+The `FallbackLLM` wrapper chains primary → fallback (`llama-3.3-70b` via Groq) automatically on failure.
 
 ---
 

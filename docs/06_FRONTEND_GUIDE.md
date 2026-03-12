@@ -116,10 +116,10 @@ After completing the risk assessment questionnaire, the user's risk profile is s
 
 LLM API calls (Gemini) are expensive and slow. The frontend caches results in localStorage with time-to-live (TTL):
 
-| Cache                | TTL     | Key Prefix             | Purpose                          |
-| -------------------- | ------- | ---------------------- | -------------------------------- |
-| AI (Deep) Analysis   | 2 hours | `emetix_llm_analysis_` | Single-agent Gemini analysis     |
-| Multi-Agent Analysis | 1 hour  | `emetix_multiagent_`   | Full 8-agent orchestrated output |
+| Cache                | TTL            | Key Prefix             | Purpose                                     |
+| -------------------- | -------------- | ---------------------- | ------------------------------------------- |
+| AI (Deep) Analysis   | 2 hours        | `emetix_llm_analysis_` | Single-agent Gemini analysis                |
+| Multi-Agent Analysis | 1 hour (local) | `emetix_multiagent_`   | Client cache; server-side 8h TTL in MongoDB |
 
 - Cache is checked before API calls — instant results on repeat visits
 - Uses React `useMemo` for lazy initialisation (avoids React 19 `setState`-in-effect warnings)
@@ -159,14 +159,14 @@ The backend is hosted on Render's free tier, which sleeps after 15 minutes of in
 
 **Page**: `app/stock/[ticker]/page.tsx`
 
-| Tab / Section        | Description                                                                                  |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| Overview             | Price, key metrics, classification badge                                                     |
-| Charts               | Interactive Recharts price/volume visualisation                                              |
-| Financials           | Analyst-style infographic (revenue bars, margins, multiple compression, beat-down detection) |
-| Fundamentals         | Detailed metrics with collapsible extended view                                              |
-| AI Analysis          | Gemini-powered deep analysis (cached 2 hrs)                                                  |
-| Multi-Agent Analysis | Full 8-agent orchestrated analysis (cached 1 hr)                                             |
+| Tab / Section        | Description                                                                                     |
+| -------------------- | ----------------------------------------------------------------------------------------------- |
+| Overview             | Price, key metrics, classification badge                                                        |
+| Charts               | Interactive Recharts price/volume visualisation                                                 |
+| Financials           | Analyst-style infographic (revenue bars, margins, multiple compression, beat-down detection)    |
+| Fundamentals         | Detailed metrics with collapsible extended view                                                 |
+| AI Analysis          | Gemini-powered deep analysis (cached 2 hrs)                                                     |
+| Multi-Agent Analysis | Data-first analysis: enriched narratives + 1 LLM synthesis (server-cached 8h, client-cached 1h) |
 
 ### 8. Mobile Responsive Navigation
 

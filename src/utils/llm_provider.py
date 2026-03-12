@@ -35,9 +35,9 @@ logger = get_logger(__name__)
 
 # Model mappings for each provider (updated Jan 2026)
 GEMINI_MODELS = {
-    "default": "gemini-2.5-flash-lite",   # Best balance: 10 RPM, 2M TPM
-    "large": "gemini-2.5-flash",          # More capable: 5 RPM, 250K TPM
-    "fast": "gemini-2.5-flash-lite",      # Fastest: 10 RPM
+    "default": "gemini-2.5-flash-lite",   # Best balance: 10 RPM, 20 RPD
+    "large": "gemini-2.5-flash",          # More capable: 5 RPM, 20 RPD
+    "fast": "gemma-3-27b-it",             # High-quota: 30 RPM, 14,400 RPD
 }
 
 # Fallback chain when rate limited (ordered by preference)

@@ -38,11 +38,12 @@ Emetix uses a **LangGraph-based multi-agent system** to orchestrate comprehensiv
 
 ### Provider Hierarchy (`src/utils/llm_provider.py`)
 
-| Tier         | Model                   | Use Case                                    |
-| ------------ | ----------------------- | ------------------------------------------- |
-| **Large**    | `gemini-2.5-flash`      | Supervisor orchestration, complex reasoning |
-| **Fast**     | `gemini-2.5-flash-lite` | Sub-agent tools, quick lookups              |
-| **Fallback** | `llama-3.3-70b` (Groq)  | When Gemini quota exhausted                 |
+| Tier         | Model                   | Rate Limit          | Use Case                                       |
+| ------------ | ----------------------- | ------------------- | ---------------------------------------------- |
+| **Large**    | `gemini-2.5-flash`      | 5 RPM / 20 RPD      | Synthesis — the **only** LLM call per analysis |
+| **Default**  | `gemini-2.5-flash-lite` | 10 RPM / 20 RPD     | Supervisor orchestration (deep analysis mode)  |
+| **Fast**     | `gemma-3-27b-it`        | 30 RPM / 14,400 RPD | High-volume endpoints (future use)             |
+| **Fallback** | `llama-3.3-70b` (Groq)  | —                   | When Gemini quota exhausted                    |
 
 The `FallbackLLM` wrapper automatically retries with the fallback provider on failure. Configured via:
 
@@ -175,3 +176,93 @@ The multi-agent system is exposed through the **Multi-Agent Router** (`/api/mult
 | `/api/multiagent/watchlist/analyze`           | POST   | Multi-stock watchlist analysis |
 
 See [05 — API Reference](05_API_REFERENCE.md) for full endpoint documentation.
+
+---
+
+## Data-First Architecture (LLM Cost Optimisation)
+
+A key architectural decision was **reducing LLM calls from 4 per analysis to 1** without sacrificing output quality. This was motivated by the tight free-tier rate limits on Google Gemini (20 requests/day on `gemini-2.5-flash`).
+
+### Before (4 LLM Calls)
+
+```
+User requests analysis for AAPL
+  │
+  ├─ LLM Call 1: SentimentAnalyzerAgent (Gemini orchestrates tools)
+  ├─ LLM Call 2: FundamentalsAnalyzerAgent (Gemini orchestrates tools)
+  ├─ LLM Call 3: EnhancedValuationAgent (Gemini selects LSTM-DCF + Consensus tools)
+  └─ LLM Call 4: Synthesis (Gemini combines all results)
+  Total: 4 LLM calls per request
+```
+
+### After — Data-First (1 LLM Call)
+
+```
+User requests analysis for AAPL
+  │
+  ├─ Data: _compute_sentiment_data()     ← pure Python, no LLM
+  ├─ Data: _compute_fundamentals_data()  ← pure Python, no LLM
+  ├─ Data: LSTM_DCF_Valuation.func()     ← direct tool call, no LLM
+  ├─ Data: ConsensusValuation.func()     ← direct tool call, no LLM
+  │
+  ├─ Narrative: _build_sentiment_narrative()      ← template builder
+  ├─ Narrative: _build_fundamentals_narrative()   ← template builder
+  ├─ Narrative: _build_ml_narrative()             ← template builder
+  │
+  └─ LLM Call 1: _generate_synthesis()   ← ONLY Gemini call
+  Total: 1 LLM call per request (75% reduction)
+```
+
+**Key principle**: Compute real scores from market data (yfinance, news APIs, ML models), build rich narratives programmatically, and reserve the LLM exclusively for cross-section synthesis — the one task that genuinely benefits from generative reasoning.
+
+### MongoDB Analysis Cache
+
+All analysis results are cached server-side in MongoDB (`analysis_cache` collection) with an **8-hour TTL**. Repeat requests for the same ticker return cached results instantly, further reducing LLM consumption.
+
+```python
+db.analysis_cache.find_one({"ticker": ticker, "type": analysis_type})
+# Returns cached result if generated_at < 8 hours ago
+```
+
+---
+
+## Enriched Data-Driven Narratives
+
+The data-first architecture produces **contextually rich narratives** without LLM involvement. Each tab in the Multi-Agent Analysis panel generates educational, benchmark-aware content from real data:
+
+### Sentiment Narrative
+
+Built by `_build_sentiment_narrative()` from three data sources:
+
+| Component       | Source                   | Weight | Output                                                    |
+| --------------- | ------------------------ | ------ | --------------------------------------------------------- |
+| News Sentiment  | `NewsSentimentFetcher`   | 40%    | Top headlines with sentiment badges, article distribution |
+| Analyst Ratings | yfinance recommendations | 30%    | Buy/Hold/Sell counts, recent firm actions + grade changes |
+| Price Momentum  | yfinance 3-month history | 30%    | 1-month return, trend classification                      |
+
+Includes a **Key Takeaways** section with data-driven insights:
+
+- News distribution analysis (e.g., "8/12 articles bullish")
+- Analyst consensus strength assessment
+- Momentum ↔ sentiment divergence detection (e.g., "Price rising despite negative news")
+
+### Fundamentals Narrative
+
+Built by `_build_fundamentals_narrative()` with benchmark-aware annotations:
+
+- **Sector Context**: Industry, market cap tier (Micro → Mega-Cap), beta volatility class, dividend yield
+- **Metric Annotations**: Each metric includes educational benchmarks (e.g., "ROE 26.3% — _excellent; benchmark >15%_")
+- **Key Turning Points to Watch**: Conditional flags triggered by data patterns:
+  - Earnings/revenue growth divergence (margin compression indicator)
+  - High leverage + thin margins (cash flow risk)
+  - 52-week range proximity (momentum or value-trap signal)
+  - Extreme P/E or PEG ratios (expectations risk)
+
+### ML Valuation Narrative
+
+Built by `_build_ml_narrative()` wrapping raw LSTM-DCF and Consensus tool output:
+
+- **Methodology**: Auto-detects V1 vs V2 model, explains LSTM-DCF approach and consensus weighting
+- **Growth Assumptions**: Surfaces ML-forecasted revenue and FCF growth rates with context labels
+- **What This Means**: Educational interpretation calibrated to the valuation gap magnitude (>30% = strong opportunity, near 0% = fair value, <−20% = overvaluation caution)
+- **Detailed Model Output**: Raw tool output preserved for transparency
