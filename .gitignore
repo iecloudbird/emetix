@@ -101,7 +101,7 @@ logs/
 *~
 
 # GitHub specific files
-.github/
+.github/copilot-instructions.md
 
 # macOS
 .DS_Store
